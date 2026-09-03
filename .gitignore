@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri / frontend (ileride)
+node_modules/
+dist/

@@ -1,0 +1,11 @@
+[package]
+name = "trdpi-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TR-DPI Adaptive — yerel SOCKS5 motoru. Ayrıcalık gerektirmez."
+
+[dependencies]
+trdpi-core = { workspace = true }
+thiserror = { workspace = true }
