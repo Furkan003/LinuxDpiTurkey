@@ -5,3 +5,6 @@ Cargo.lock.bak
 # Tauri / frontend (ileride)
 node_modules/
 dist/
+
+# Makineye özel derleme yolu (OneDrive dışı)
+.cargo/config.toml
