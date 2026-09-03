@@ -54,10 +54,11 @@ pub fn find_sni(record: &[u8]) -> Option<SniLocation> {
     // extensions
     let ext_total = be16(record, pos)?;
     pos = pos.checked_add(2)?;
-    let ext_end = pos.checked_add(ext_total)?;
-    if ext_end > record.len() {
-        return None;
-    }
+    // Gerçek bir ClientHello MSS'i aşabilir ve birden fazla TCP paketine
+    // bölünür. Elimizde kaydın yalnızca ilk parçası olsa bile SNI o parçada
+    // olabilir; bu yüzden eksik kayıtta pes etmiyoruz, elimizdeki kadarını
+    // tarıyoruz. Bu kontrol katıyken gerçek trafikte SNI hiç bulunamıyordu.
+    let ext_end = pos.checked_add(ext_total)?.min(record.len());
 
     while pos + 4 <= ext_end {
         let ext_type = be16(record, pos)?;
@@ -211,5 +212,48 @@ mod tests {
         assert!(is_client_hello(&client_hello("a.co")));
         assert!(!is_client_hello(b"HTTP/1.1 200 OK"));
         assert!(!is_client_hello(&[0x15, 0x03, 0x03, 0x00, 0x02, 0x01]));
+    }
+}
+
+#[cfg(test)]
+mod gercek_paket_testleri {
+    use super::*;
+
+    /// curl'ün gerçekten gönderdiği bir ClientHello.
+    ///
+    /// Sentetik test verisi küçük olduğu için eksik kayıt durumunu hiç
+    /// yakalamamıştı; bu dosya onu yakalar.
+    const GERCEK: &[u8] = include_bytes!("../tests/data/clienthello-gercek.bin");
+
+    #[test]
+    fn gercek_client_hello_taniniyor() {
+        assert!(is_client_hello(GERCEK));
+        let loc = find_sni(GERCEK).expect("gerçek pakette SNI bulunamadı");
+        assert_eq!(loc.host, "discord.com");
+        assert_eq!(&GERCEK[loc.range], b"discord.com");
+    }
+
+    /// Gerçek ClientHello MSS'i aşıyor ve ağda bölünüyor. İlk parçada SNI
+    /// varsa bulunmalı — bu, motorun gerçek trafikte çalışmamasının sebebiydi.
+    #[test]
+    fn eksik_kayitta_da_sni_bulunuyor() {
+        assert!(GERCEK.len() > 1460, "paket MSS'i aşmıyor, test anlamsız");
+
+        let ilk_parca = &GERCEK[..1460];
+        let loc = find_sni(ilk_parca).expect("eksik kayıtta SNI bulunamadı");
+        assert_eq!(loc.host, "discord.com");
+    }
+
+    /// SNI'dan önce kesilmişse bulunamaz — uydurmak yerine None dönmeli.
+    #[test]
+    fn sni_gelmeden_kesilmisse_bulunamiyor() {
+        assert!(find_sni(&GERCEK[..100]).is_none());
+    }
+
+    #[test]
+    fn her_kesim_noktasinda_panik_yok() {
+        for n in 0..GERCEK.len() {
+            let _ = find_sni(&GERCEK[..n]);
+        }
     }
 }
