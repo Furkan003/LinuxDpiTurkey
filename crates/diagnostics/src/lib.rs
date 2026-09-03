@@ -21,7 +21,7 @@ pub mod dns;
 pub mod tcp;
 pub mod tls;
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use trdpi_core::{Classification, DiagnosticKind, DiagnosticResult};
@@ -91,6 +91,132 @@ fn resolve(target: &Target) -> std::io::Result<Vec<SocketAddr>> {
     Ok(target.authority().to_socket_addrs()?.collect())
 }
 
+/// Karşılaştırma için sorulan bağımsız çözümleyiciler.
+///
+/// İlki standart portta; müdahale bu portta yapılıyorsa o da zehirli yanıt
+/// döner. İkincisi **standart dışı portta**, çünkü 53. porttaki yönlendirme
+/// onu yakalamaz. İkisinin farklı cevap vermesi, müdahalenin nerede
+/// olduğunu söyler.
+const REFERENCE_RESOLVERS: [(&str, &str); 2] = [
+    ("1.1.1.1:53", "standart port"),
+    ("77.88.8.8:1253", "standart dışı port"),
+];
+
+/// Sistem çözümleyicisinin yanıtını bağımsız çözümleyicilerle karşılaştırır.
+///
+/// Yalnızca "adresler farklı" demek yetmez: CDN'ler bölgeye göre zaten farklı
+/// adres döndürür ve bunu müdahale saymak yanlış olur. Bu yüzden fark
+/// bulununca **ikisine de bağlanmayı deniyoruz**. Sistemin verdiği adrese
+/// ulaşılamıyor ama bağımsız kaynağınkine ulaşılıyorsa, zehirlenme kanıtlanmış
+/// olur; ikisi de çalışıyorsa bu sadece CDN farkıdır.
+fn check_dns(target: &Target, timeouts: &Timeouts, system: &[SocketAddr]) -> DiagnosticResult {
+    use std::net::IpAddr;
+
+    let sistem: Vec<Ipv4Addr> = system
+        .iter()
+        .filter_map(|a| match a.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+
+    let sistem_yanit = dns::DnsAnswer {
+        addresses: sistem.clone(),
+        rcode: 0,
+    };
+
+    let tampered = |detay: String| {
+        DiagnosticResult::failed(
+            DiagnosticKind::DnsIntegrity,
+            &target.host,
+            Classification::DnsTampered,
+        )
+        .with_detail(detay)
+    };
+
+    // Bilinen sansür adresi tek başına kesin kanıttır.
+    if dns::is_censorship_response(&sistem_yanit) {
+        return tampered("bilinen sansür adresi döndü".into());
+    }
+
+    let mut sorulabilen = 0;
+    let mut farkli: Option<(Ipv4Addr, &str)> = None;
+
+    for (adres, etiket) in REFERENCE_RESOLVERS {
+        let Ok(resolver) = adres.parse() else {
+            continue;
+        };
+        let Ok(yanit) = dns::query(resolver, &target.host, timeouts.dns) else {
+            continue;
+        };
+        sorulabilen += 1;
+
+        if dns::is_censorship_response(&yanit) {
+            return tampered(format!("{etiket}: bilinen sansür adresi"));
+        }
+        if farkli.is_none() && dns::answers_disagree(&sistem_yanit, &yanit) {
+            if let Some(ip) = yanit.addresses.first() {
+                farkli = Some((*ip, etiket));
+            }
+        }
+    }
+
+    if sorulabilen == 0 {
+        // Karşılaştırma yapılamadı; "sorun yok" demek yanlış olur.
+        return DiagnosticResult::failed(
+            DiagnosticKind::DnsIntegrity,
+            &target.host,
+            Classification::Unknown,
+        )
+        .with_detail("bağımsız çözümleyiciye ulaşılamadı".to_string());
+    }
+
+    let Some((bagimsiz_ip, etiket)) = farkli else {
+        return DiagnosticResult::ok(DiagnosticKind::DnsIntegrity, &target.host, Duration::ZERO)
+            .with_detail(format!(
+                "{} adres, {sorulabilen} kaynakla doğrulandı",
+                sistem.len()
+            ));
+    };
+
+    // Adresler farklı. Fark tek başına bir şey söylemez — hangisinin
+    // çalıştığına bakalım.
+    let Some(sistem_ip) = sistem.first() else {
+        return tampered(format!("{etiket} adres verdi, sistem vermedi"));
+    };
+
+    let sistem_calisiyor = tcp::connect(
+        SocketAddr::new(IpAddr::V4(*sistem_ip), target.port),
+        timeouts.tcp,
+    )
+    .0
+    .is_success();
+
+    let bagimsiz_calisiyor = tcp::connect(
+        SocketAddr::new(IpAddr::V4(bagimsiz_ip), target.port),
+        timeouts.tcp,
+    )
+    .0
+    .is_success();
+
+    match (sistem_calisiyor, bagimsiz_calisiyor) {
+        // Kanıt: sistemin verdiği adres ölü, bağımsız kaynağınki canlı.
+        (false, true) => tampered(format!(
+            "sistemin verdiği {sistem_ip} ulaşılamıyor, {etiket} adresi {bagimsiz_ip} çalışıyor"
+        )),
+        // İkisi de çalışıyor: bu yalnızca CDN farkı.
+        (true, _) => {
+            DiagnosticResult::ok(DiagnosticKind::DnsIntegrity, &target.host, Duration::ZERO)
+                .with_detail(format!("{} adres, farklar CDN kaynaklı", sistem.len()))
+        }
+        // İkisi de ölü: sorun DNS'te değil.
+        (false, false) => {
+            DiagnosticResult::ok(DiagnosticKind::DnsIntegrity, &target.host, Duration::ZERO)
+                .with_detail("adresler farklı ama hiçbiri çalışmıyor — sorun DNS değil".to_string())
+        }
+    }
+}
+
 /// Tek bir hedef için DNS → TCP → TLS zincirini çalıştırır.
 ///
 /// Zincir kısa devre yapar: TCP kurulamazsa TLS ölçülmez, çünkü o aşamada
@@ -100,10 +226,7 @@ pub fn probe_target(target: &Target, timeouts: &Timeouts) -> Vec<DiagnosticResul
 
     let addrs = match resolve(target) {
         Ok(a) if !a.is_empty() => {
-            results.push(
-                DiagnosticResult::ok(DiagnosticKind::DnsIntegrity, &target.host, Duration::ZERO)
-                    .with_detail(format!("{} adres", a.len())),
-            );
+            results.push(check_dns(target, timeouts, &a));
             a
         }
         _ => {
