@@ -1,0 +1,15 @@
+[package]
+name = "trdpi-transparent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TR-DPI Adaptive — sistem geneli şeffaf yönlendirme (Linux)."
+
+[dependencies]
+trdpi-core = { workspace = true }
+trdpi-proxy = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

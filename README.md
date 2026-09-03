@@ -1,20 +1,50 @@
 # TR-DPI Adaptive
 
-Türkiye ağlarındaki bağlantı engellerini **önce teşhis eden**, sonra uygun yöntemi seçen açık kaynak masaüstü ağ aracı. Linux ve Windows.
+Türkiye ağlarındaki bağlantı engellerini **önce teşhis eden**, sonra uygun yöntemi uygulayan açık kaynak ağ aracı. Linux ve Windows.
 
 VPN değil. Uzak sunucu yok, hesap yok, trafik başka bir yere yönlendirilmiyor.
 
-> **Durum:** Geliştirme aşamasında. Teşhis motoru ve yerel proxy motoru çalışıyor ve kullanılabilir. Sistem geneli koruma (NFQUEUE) ve grafik arayüz henüz yok.
+> **Durum:** Linux'ta sistem geneli koruma çalışıyor. Grafik arayüz ve otomatik profil seçimi henüz yok.
 
 ## Neden
 
-Mevcut araçlar (GoodbyeDPI, zapret, ByeDPI) güçlü motorlar sunuyor ama kullanıcıya onlarca parametre bırakıyor. Bu proje bunun tersini yapıyor: **önce ağını ölçüyor**, ne tür bir müdahale olduğunu sınıflandırıyor, sonra ona uygun yöntemi seçiyor.
+Mevcut araçlar (GoodbyeDPI, zapret, ByeDPI) güçlü motorlar sunuyor ama kullanıcıya onlarca parametre bırakıyor. Bu proje önce ağını ölçüyor, ne tür bir müdahale olduğunu sınıflandırıyor, sonra ona göre davranıyor.
 
-Fark şurada: "hangi flag'i deneyeyim" sorusu yerine "bağlantım neden bozuk" sorusuna cevap veriyor.
+Fark şurada: "hangi flag'i deneyeyim" yerine "bağlantım neden bozuk" sorusuna cevap veriyor.
 
-## Şu an çalışan
+## Sistem geneli koruma (Linux)
 
-### Teşhis motoru
+Bütün uygulamalar kapsam içinde. Discord, Sober ve diğerlerinde **hiçbir ayar yapmana gerek yok.**
+
+```bash
+sudo trdpi-koruma
+```
+
+Durdurmak için Ctrl+C — kurallar otomatik geri alınır.
+
+Nasıl çalışıyor: nftables ile giden TCP:443 trafiği yerel bir dinleyiciye yönlendirilir, orada TLS ClientHello alan adının ortasından ikiye bölünerek iletilir. Böylece araya giren inceleme donanımı alan adını tek parçada göremez.
+
+Çıkışta kaç bağlantının geçtiğini ve kaçının parçalandığını yazar:
+
+```
+Bağlantı: 4 · parçalanan: 4 · başarısız: 0
+```
+
+`Bağlantı: 0` görüyorsan yönlendirme çalışmamış demektir.
+
+**Kapsam dışı:** UDP trafiği. Yani QUIC ve oyunların gerçek zamanlı bağlantısı bu yöntemden geçmez.
+
+### Bir şeyler ters giderse
+
+Süreç düzgün kapanamazsa (`kill -9`, elektrik kesintisi) nftables kuralı yerinde kalır ve **tüm TCP:443 trafiği kopar.** Kurtarma:
+
+```bash
+sudo trdpi-koruma --temizle
+```
+
+Uygulama zaten her açılışta kendine ait kalıntı kuralları arayıp siler.
+
+## Teşhis motoru
 
 Ayrıcalık gerektirmez, sistemde hiçbir şeyi değiştirmez.
 
@@ -23,8 +53,6 @@ cargo run -p trdpi-diagnostics --example teshis
 cargo run -p trdpi-diagnostics --example teshis -- discord.com www.instagram.com
 ```
 
-Örnek çıktı:
-
 ```
 discord.com  [ölçüm]
   OK   DnsIntegrity             -  healthy            5 adres
@@ -32,27 +60,24 @@ discord.com  [ölçüm]
   OK   TlsHandshake         21 ms  healthy
 ```
 
-Ölçtüğü ve ayırt ettiği durumlar:
+Ayırt ettiği durumlar:
 
 ```
 healthy  degraded  throttled  quic_blocked
 dns_tampered  tcp_reset  tls_interference  timeout  unknown
 ```
 
-`tls_interference` ile `timeout` arasındaki fark bu projede önemli: birincisi ClientHello yazıldıktan *sonra* gelen reset (Türkiye'de gözlenen tipik davranış), ikincisi yanıtsızlık. Bu ayrımı koruyabilmek için TLS handshake'i hazır kütüphane yerine elle ölçülüyor — `rustls` gibi kütüphaneler her iki durumu da tek bir "handshake failed"e indirir.
+`tls_interference` ile `timeout` arasındaki fark bu projede önemli: birincisi ClientHello yazıldıktan *sonra* gelen reset (Türkiye'de gözlenen tipik davranış), ikincisi yanıtsızlık. Bu ayrımı koruyabilmek için TLS handshake'i hazır kütüphane yerine elle ölçülüyor — `rustls` gibi kütüphaneler her iki durumu da tek bir "handshake failed"e indirger.
 
-### Yerel proxy motoru
+## Yerel proxy (Windows ve Linux)
 
-Ayrıcalık gerektirmez. TLS ClientHello'yu SNI'ın ortasından bölerek gönderir.
+Yönetici yetkisi istemez ama yalnızca kendisine yönlendirilen uygulamaları korur.
 
 ```bash
-cargo run -p trdpi-proxy --bin trdpi-proxy
-cargo run -p trdpi-proxy --bin trdpi-proxy -- --port 1080 --strateji sni
+cargo run -p trdpi-proxy --bin trdpi-proxy -- --port 1080
 ```
 
-Sonra tarayıcını `127.0.0.1:1080` SOCKS5 adresine yönlendir. Firefox'ta: **Ayarlar → Ağ Ayarları → Elle proxy → SOCKS v5**, ve *"SOCKS v5 kullanırken DNS'i proxy üzerinden çöz"* işaretli olsun.
-
-Seçenekler:
+Firefox: **Ayarlar → Ağ Ayarları → Elle proxy → SOCKS v5**, `127.0.0.1:1080`, *"SOCKS v5 kullanırken DNS'i proxy üzerinden çöz"* işaretli.
 
 | Seçenek | Değer | Varsayılan |
 |---|---|---|
@@ -60,29 +85,28 @@ Seçenekler:
 | `--strateji` | `sni` \| `kapali` \| `sabit:<konum>` | `sni` |
 | `--gecikme` | parçalar arası bekleme (ms) | 12 |
 
-**Kapsamı sınırlı:** yalnızca proxy'ye yönlendirilen uygulamalar etkilenir. Sistem geneli koruma NFQUEUE ister, o henüz yazılmadı.
-
-**Yapamadıkları:** sahte paket, TTL oyunları, sıra dışı gönderim. Bunlar ham paket erişimi ister. Motor bunları isteyen bir profili sessizce yok saymaz — reddeder, çünkü sessizce yok saymak başarısızlığın yanlış sebebe atfedilmesine yol açar.
-
 ## Yapı
 
 ```
 crates/
-├─ core/          kanonik tipler ve sözleşmeler — I/O yok, platform kodu yok, unsafe yok
+├─ core/          kanonik tipler ve sözleşmeler — I/O yok, platform kodu yok
 ├─ diagnostics/   ağ ölçümü — ayrıcalık gerektirmez
-└─ proxy/         yerel SOCKS5 motoru — ayrıcalık gerektirmez
+├─ proxy/         yerel SOCKS5 motoru — ayrıcalık gerektirmez
+└─ transparent/   sistem geneli yönlendirme (Linux) — nftables
 ```
 
 `crates/core` projenin tek normatif sözleşme kaynağıdır. `TR-DPI-Adaptive-*.md` dosyaları gerekçe ve arka plan belgeleridir; tip tanımı için normatif değildir.
 
 ## Tasarım kuralları
 
-- **GUI asla root/admin çalışmaz.** Ayrıcalık gereken işler ayrı bir yardımcıya gider.
-- **Her sistem değişikliği snapshot + geri alma ile yapılır.** `Backend::rollback` snapshot alır; alamayan bir imza kabul edilmez.
-- **Yalnızca kendi objelerimize dokunuruz.** Oluşturulan her sistem objesi oturum kimliğiyle etiketlenir; `docker0` veya `ufw-*` gibi yabancı objeler snapshot'a kaydedilemez.
-- **Ölçüm yokluğu sağlık kanıtı değildir.** Veri toplanamadıysa sonuç `unknown`'dır, `healthy` değil.
+- **Yalnızca kendi objelerimize dokunuruz.** Oluşturulan her nftables tablosu oturum kimliğiyle etiketlenir. `docker0`, `ufw-*`, `firewalld` gibi yabancı objeler ne yedeklenir ne silinir — ve hiçbir komut `flush ruleset` üretmez.
+- **Her sistem değişikliği snapshot + geri alma ile yapılır.** `Backend::rollback` snapshot alır; almayan bir imza kabul edilmez.
+- **Geri alma sırası önemlidir.** Önce nftables kuralı kaldırılır, sonra dinleyici kapatılır. Tersi olsaydı trafik var olmayan bir porta yönlenir ve ağ tamamen kopardı.
+- **Ölçüm yokluğu sağlık kanıtı değildir.** Veri toplanamadıysa sonuç `unknown`, `healthy` değil.
 - **Kapalı port sansür değildir.** Bağlantı reddi ve erişilemeyen yol `unknown` sayılır.
-- **Kullanıcıya terminal komutu önerilmez.** Her hata durumunun kullanıcı arayüzünde karşılığı vardır.
+- **Yapamadığımız tekniği sessizce yok saymayız.** Kullanıcı alanı motorları sahte paket ve TTL tekniği uygulayamaz; bunları isteyen profil reddedilir. Sessizce yok saymak başarısızlığın yanlış sebebe atfedilmesine yol açardı.
+- **`nft` komutuna argüman dizisi verilir**, kabuk dizesi değil. Dinamik değerler (tablo adı, portlar) alfanumerik olmaya zorlanır.
+- **Kullanıcıya terminal komutu önerilmez.** Her hata durumunun arayüzde karşılığı vardır.
 - **Karar distro adına değil yetenek tespitine dayanır.** `/etc/os-release` yalnızca gösterim içindir.
 
 ## Gizlilik
@@ -103,18 +127,20 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-Testlerin tamamı gerçek ağ backend'i olmadan çalışır. Ağ gerektiren tek şey `teshis` örneğidir.
+Testlerin tamamı gerçek ağ backend'i olmadan çalışır; ağ gerektiren tek şey `teshis` örneğidir. Linux'a özel kod WSL2 üzerinde de derlenip test edilebilir — WSL2 çekirdeği nftables ve NFQUEUE destekler.
 
 ## Yol haritası
 
 - [x] Kanonik tip katmanı
 - [x] Teşhis motoru (DNS / TCP / TLS)
 - [x] Yerel proxy motoru + SNI parçalama
-- [ ] Politika motoru — teşhisten profil seçimi
+- [x] Sistem geneli koruma (Linux, nftables)
+- [x] Yetim kural temizliği ve sinyal ile güvenli kapanış
+- [ ] Politika motoru — teşhis sonucundan otomatik profil seçimi
 - [ ] QUIC erişilebilirlik ölçümü
-- [ ] Linux NFQUEUE motoru + polkit yardımcısı
 - [ ] Grafik arayüz
 - [ ] AppImage / deb / rpm paketleme
+- [ ] Windows sistem geneli koruma
 
 ## Lisans
 
