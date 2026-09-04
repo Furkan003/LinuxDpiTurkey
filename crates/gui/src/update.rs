@@ -106,7 +106,7 @@ pub fn compare(remote: Version, local: Version) -> UpdateStatus {
 /// olursa kontrol sessizce [`UpdateStatus::Unknown`] döner; araç çalışmaya
 /// devam eder.
 pub const VERSION_URL: &str =
-    "https://raw.githubusercontent.com/DEPO_SAHIBI/LinuxDpiTurkey/main/SURUM";
+    "https://raw.githubusercontent.com/Furkan003/LinuxDpiTurkey/main/SURUM";
 
 /// Yeni sürüm var mı diye bakar.
 ///
