@@ -1,0 +1,22 @@
+Package: trdpi
+Architecture: amd64
+Version: 0.1.1
+Priority: optional
+Section: net
+Maintainer: TR-DPI
+Installed-Size: 2612
+Depends: libc6 (>= 2.35), libx11-6, libxkbcommon0, libgl1, libwayland-client0, nftables, policykit-1 | polkit
+Recommends: systemd-resolved
+Filename: pool/main/t/trdpi/trdpi_0.1.1_amd64.deb
+Size: 732884
+MD5sum: 7f8b07775e8a0ed58a9ec76c11f34961
+SHA1: 07ae414442191d850ada61522add67cf6d285606
+SHA256: c0604f99d3d699ff89c265fd44109c670d0fed8224868c0f570dcb2e59122951
+SHA512: 1b56af82f159ac2d2ec228cb1b632b94293aeee1040b6e8f9399619ea1a6716829fe6bb6ead5f884a7868fdff265acdb128d87dc269299e6e5d678666a9469fa
+Description: Engellenen sitelere erisimi acar
+ Bağlantındaki engeli önce ölçer, sonra ona uygun yöntemi kendisi seçer.
+ Terminal gerekmez: pencereyi aç, düğmeye bas.
+ .
+ Adres çözümlemesine yapılan müdahaleyi düzeltir ve rastgele kesilen
+ bağlantıları yeniden dener. Yaptığı her değişiklik geri alınabilir.
+
