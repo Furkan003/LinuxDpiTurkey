@@ -18,6 +18,7 @@
 #![warn(missing_docs)]
 
 pub mod dns;
+pub mod recommend;
 pub mod tcp;
 pub mod tls;
 
@@ -217,6 +218,31 @@ fn check_dns(target: &Target, timeouts: &Timeouts, system: &[SocketAddr]) -> Dia
     }
 }
 
+/// Adresin ayakta olup olmadığını anlamak için denenen ikinci port.
+///
+/// Şifresiz web portu neredeyse her sunucuda açıktır; kapalıysa sorun büyük
+/// ihtimalle adresin kendisindedir.
+pub const CROSS_CHECK_PORT: u16 = 80;
+
+/// Aynı adrese ikinci bir porttan bağlanmayı dener.
+///
+/// `Some(true)`: adres ayakta, engel hedef porta özel.
+/// `Some(false)`: adrese hiçbir kapıdan ulaşılamıyor.
+/// `None`: sonuç yorumlanamıyor (bağlantı açıkça reddedildi — sunucu orada
+/// ama o portu dinlemiyor olabilir).
+fn cross_check_port(addr: SocketAddr, timeout: Duration) -> Option<bool> {
+    if addr.port() == CROSS_CHECK_PORT {
+        return None;
+    }
+    let ikinci = SocketAddr::new(addr.ip(), CROSS_CHECK_PORT);
+    match tcp::connect(ikinci, timeout).0 {
+        tcp::TcpOutcome::Connected => Some(true),
+        tcp::TcpOutcome::TimedOut => Some(false),
+        // Reddedilme "port kapalı" demektir, adres hakkında bir şey söylemez.
+        _ => None,
+    }
+}
+
 /// Tek bir hedef için DNS → TCP → TLS zincirini çalıştırır.
 ///
 /// Zincir kısa devre yapar: TCP kurulamazsa TLS ölçülmez, çünkü o aşamada
@@ -245,12 +271,23 @@ pub fn probe_target(target: &Target, timeouts: &Timeouts) -> Vec<DiagnosticResul
     results.push(if tcp_outcome.is_success() {
         DiagnosticResult::ok(DiagnosticKind::TcpConnect, target.authority(), tcp_time)
     } else {
+        // Bağlantı kurulamadı. Adresin tamamen ulaşılamaz olması ile yalnızca
+        // bu portun engellenmesi farklı şeylerdir ve farklı çözüm gerektirir,
+        // bu yüzden aynı adrese başka bir porttan da bakıyoruz.
+        let detay = match cross_check_port(addr, timeouts.tcp) {
+            Some(true) => format!(
+                "{tcp_outcome:?} — adres ayakta ({} kapısı açılıyor), engel bu kapıya özel",
+                CROSS_CHECK_PORT
+            ),
+            Some(false) => format!("{tcp_outcome:?} — adrese hiçbir kapıdan ulaşılamıyor"),
+            None => format!("{tcp_outcome:?}"),
+        };
         DiagnosticResult::failed(
             DiagnosticKind::TcpConnect,
             target.authority(),
             tcp_outcome.classify(),
         )
-        .with_detail(format!("{tcp_outcome:?}"))
+        .with_detail(detay)
     });
 
     let Some(mut stream) = stream else {

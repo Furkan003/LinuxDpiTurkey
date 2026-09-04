@@ -9,8 +9,8 @@
 
 use std::time::Duration;
 
-use trdpi_core::{Classification, NetworkFingerprint};
-use trdpi_diagnostics::{probe_target, Target, Timeouts};
+use trdpi_core::NetworkFingerprint;
+use trdpi_diagnostics::{probe_target, recommend::recommend, Target, Timeouts};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -60,11 +60,25 @@ fn main() {
 
     let overall = NetworkFingerprint::overall(&all);
     let fp = NetworkFingerprint::from_results(&all);
+    let oneri = recommend(&all);
 
+    println!("══════════════════════════════════════════════");
+    println!("{}", oneri.summary);
+    println!();
+    println!("{}", oneri.reason);
+
+    if !oneri.steps.is_empty() {
+        println!();
+        println!("Yapman gerekenler:");
+        for (i, adim) in oneri.steps.iter().enumerate() {
+            println!("  {}. {adim}", i + 1);
+        }
+    }
+
+    // Teknik ayrıntı sonda ve ayrı: gerekmedikçe okunması gerekmiyor.
+    println!();
     println!("──────────────────────────────────────────────");
-    println!("Sonuç: {}", overall.user_message());
-    println!("Sınıf: {overall}");
-
+    print!("Teknik: {overall}");
     if !fp.is_clean() {
         let mut sinyaller = Vec::new();
         if fp.dns_tampering {
@@ -82,10 +96,7 @@ fn main() {
         if fp.quic_blocked {
             sinyaller.push("QUIC");
         }
-        println!("Sinyaller: {}", sinyaller.join(", "));
+        print!("  ·  sinyaller: {}", sinyaller.join(", "));
     }
-
-    if overall == Classification::Unknown {
-        println!("\nNot: yeterli sinyal toplanamadı — bu 'sorun yok' anlamına gelmez.");
-    }
+    println!();
 }
