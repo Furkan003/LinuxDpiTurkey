@@ -10,14 +10,6 @@ VPN değil. Uzak sunucu yok, hesap yok, üyelik yok. Trafiğin başka bir yere y
 
 ---
 
-## Neden
-
-Türkiye'de erişim engelleri sürekli artıyor. Windows'ta GoodbyeDPI gibi araçlar var; Linux'ta zapret var ama kullanımı zor — onlarca parametre, terminal, yapılandırma dosyaları.
-
-Windows'tan Linux'a geçen birinin bunlarla uğraşmaması gerekiyor. Bu uygulama o boşluğu dolduruyor: **kurulum çift tıkla, kullanım tek düğmeyle.**
-
-Bir de "hangi parametreyi deneyeyim" sorusunu ortadan kaldırıyor — önce ağını ölçüyor, engelin türünü bulup uygun yöntemi kendisi seçiyor.
-
 ## Kurulum
 
 `.deb` dosyasına **çift tıkla.** Menüde TR-DPI görünür.
