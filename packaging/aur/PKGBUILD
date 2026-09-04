@@ -1,0 +1,38 @@
+# Maintainer: Furkan <furkans6781@gmail.com>
+#
+# Kaynaktan degil, hazir paketten kuruluyor. Sebep:
+# Arch'in CMake 4 surumu arayuz kutuphanesini (cfltk) eksik derliyor --
+# Fl_Button_deactivate gibi semboller uretilmiyor ve baglama basarisiz
+# oluyor. Ayni kod CMake 3 ile sorunsuz derleniyor, ama kullanicinin
+# CMake surumunu secemeyiz.
+#
+# Hazir paket zaten en eski desteklenen dagitimda (glibc 2.34) uretiliyor,
+# yani Arch'ta da calisiyor. Yan fayda: kullanici derleme beklemiyor.
+pkgname=trdpi-bin
+_pkgname=trdpi
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Turkiye'de engellenen sitelere erisimi acan uygulama"
+arch=('x86_64')
+url="https://github.com/Furkan003/LinuxDpiTurkey"
+license=('MIT')
+
+depends=('nftables' 'polkit' 'libx11' 'libxkbcommon' 'cairo' 'pango' 'fontconfig')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+optdepends=('systemd-resolvconf: adres ayarinin kalici yazilmasi')
+
+source=("$_pkgname-$pkgver.deb::$url/releases/download/v$pkgver/${_pkgname}_${pkgver}_amd64.deb")
+sha256sums=('3f688d5387e87b44e8ecba386d363408fbeb8fd75fc0ca01f22df190f73f50d9')
+noextract=("$_pkgname-$pkgver.deb")
+
+package() {
+  # Veri arsivinin sikistirmasi dpkg surumune gore degisiyor
+  # (xz, zst, gz olabilir); adini sabitlemek yerine ne varsa onu aciyoruz.
+  bsdtar -xf "$srcdir/$_pkgname-$pkgver.deb" -C "$srcdir"
+  bsdtar -xf "$srcdir"/data.tar.* -C "$pkgdir"
+
+  # Lisans, Arch'in bekledigi yere.
+  install -Dm644 "$pkgdir/usr/share/doc/$_pkgname/copyright" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

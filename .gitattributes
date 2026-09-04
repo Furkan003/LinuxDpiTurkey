@@ -1,0 +1,4 @@
+# Kabuk betikleri ve PKGBUILD LF olmali; CRLF ile calismazlar.
+*.sh text eol=lf
+PKGBUILD text eol=lf
+kur.sh text eol=lf

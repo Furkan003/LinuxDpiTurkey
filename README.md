@@ -20,7 +20,13 @@ Depoyu ekler ve kurar. **Güncellemeler bundan sonra sistemin kendi güncelleyic
 
 Terminal istemiyorsan: [Releases](https://github.com/Furkan003/LinuxDpiTurkey/releases) sayfasından `.deb` dosyasını indir, **çift tıkla.**
 
-Kaldırmak için: `sudo apt remove trdpi`
+**Arch / Manjaro / EndeavourOS:**
+
+```bash
+yay -S trdpi-bin
+```
+
+Kaldırmak için: `sudo apt remove trdpi` (Arch'ta `yay -R trdpi-bin`)
 
 ## Kullanım
 
@@ -144,6 +150,7 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Çift tıkla kurulum (.deb)
 - [x] Yeni sürüm bildirimi
 - [x] İmzalı apt deposu
+- [x] AUR paketi (Arch)
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
 - [ ] QUIC / UDP kapsamı
