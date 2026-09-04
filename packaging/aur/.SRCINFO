@@ -1,6 +1,6 @@
 pkgbase = trdpi-bin
 	pkgdesc = Turkiye'de engellenen sitelere erisimi acan uygulama
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/Furkan003/LinuxDpiTurkey
 	arch = x86_64
@@ -15,8 +15,8 @@ pkgbase = trdpi-bin
 	optdepends = systemd-resolvconf: adres ayarinin kalici yazilmasi
 	provides = trdpi
 	conflicts = trdpi
-	noextract = trdpi-0.1.0.deb
-	source = trdpi-0.1.0.deb::https://github.com/Furkan003/LinuxDpiTurkey/releases/download/v0.1.0/trdpi_0.1.0_amd64.deb
-	sha256sums = 3f688d5387e87b44e8ecba386d363408fbeb8fd75fc0ca01f22df190f73f50d9
+	noextract = trdpi-0.1.1.deb
+	source = trdpi-0.1.1.deb::https://github.com/Furkan003/LinuxDpiTurkey/releases/download/v0.1.1/trdpi_0.1.1_amd64.deb
+	sha256sums = c0604f99d3d699ff89c265fd44109c670d0fed8224868c0f570dcb2e59122951
 
 pkgname = trdpi-bin
