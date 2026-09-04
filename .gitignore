@@ -2,6 +2,9 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Uretilen apt deposu -- gh-pages dalinda yayinlaniyor, burada durmaz.
+depo/
+
 # Tauri / frontend (ileride)
 node_modules/
 dist/
