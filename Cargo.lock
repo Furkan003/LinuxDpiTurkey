@@ -122,6 +122,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "trdpi-cli"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "trdpi-core",
+ "trdpi-diagnostics",
+ "trdpi-dns",
+ "trdpi-nfqueue",
+ "trdpi-transparent",
+]
+
+[[package]]
 name = "trdpi-core"
 version = "0.1.0"
 dependencies = [

@@ -69,6 +69,37 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// Kalıcı ayarın yazıldığı dosya.
+///
+/// `resolvectl` ile yapılan ayar yalnızca çalışma anındadır ve yeniden
+/// başlatınca kaybolur. Kalıcı olması için systemd-resolved'in kendi
+/// yapılandırma dizinine bir ek dosya bırakıyoruz. Ana yapılandırma dosyasına
+/// dokunmuyoruz; böylece geri alma tek dosyayı silmekten ibaret.
+pub const DROPIN_PATH: &str = "/etc/systemd/resolved.conf.d/trdpi.conf";
+
+/// Kalıcı ayar dosyasının içeriği.
+pub fn dropin_contents(upstream: SocketAddr) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "# TR-DPI tarafından oluşturuldu.
+",
+    );
+    out.push_str(
+        "# Kaldırmak için:  sudo trdpi --geri
+",
+    );
+    out.push_str(
+        "[Resolve]
+",
+    );
+    out.push_str(&format!(
+        "DNS={}
+",
+        format_upstream(upstream)
+    ));
+    out
+}
+
 /// Çözümleyici yönetimi hataları.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResolverError {
@@ -125,6 +156,50 @@ mod exec {
         Err(ResolverError::Failed(err.trim().to_owned()))
     }
 
+    /// Kalıcı ayar dosyasını yazar ve servisi yeniden yükler.
+    pub fn write_persistent(upstream: std::net::SocketAddr) -> Result<(), ResolverError> {
+        use super::{dropin_contents, DROPIN_PATH};
+
+        let path = std::path::Path::new(DROPIN_PATH);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| ResolverError::Failed(format!("dizin oluşturulamadı: {e}")))?;
+        }
+        std::fs::write(path, dropin_contents(upstream)).map_err(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied => ResolverError::Denied,
+            _ => ResolverError::Failed(e.to_string()),
+        })?;
+        reload()
+    }
+
+    /// Kalıcı ayar dosyasını siler ve servisi yeniden yükler.
+    ///
+    /// Dosya zaten yoksa bu bir hata değildir; iş bitmiş demektir.
+    pub fn remove_persistent() -> Result<(), ResolverError> {
+        use super::DROPIN_PATH;
+
+        match std::fs::remove_file(DROPIN_PATH) {
+            Ok(()) => reload(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(ResolverError::Failed(e.to_string())),
+        }
+    }
+
+    /// systemd-resolved'i yeniden başlatır.
+    fn reload() -> Result<(), ResolverError> {
+        let out = Command::new("systemctl")
+            .args(["restart", "systemd-resolved"])
+            .output()
+            .map_err(|e| ResolverError::Failed(e.to_string()))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(ResolverError::Failed(
+                String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+            ))
+        }
+    }
+
     /// Sistemin çözümleyiciyi hangi araçla yönettiğini tespit eder.
     pub fn detect_manager() -> ResolverManager {
         match Command::new("resolvectl").arg("--version").output() {
@@ -155,12 +230,24 @@ mod exec {
 }
 
 #[cfg(target_os = "linux")]
-pub use exec::{default_interface, detect_manager, run};
+pub use exec::{default_interface, detect_manager, remove_persistent, run, write_persistent};
 
 /// Linux dışında çalıştırılacak bir araç yoktur.
 #[cfg(not(target_os = "linux"))]
 pub fn run(_args: &[String]) -> Result<String, ResolverError> {
     Err(ResolverError::NotFound)
+}
+
+/// Linux dışında kalıcı ayar yoktur.
+#[cfg(not(target_os = "linux"))]
+pub fn write_persistent(_upstream: SocketAddr) -> Result<(), ResolverError> {
+    Err(ResolverError::NotFound)
+}
+
+/// Linux dışında kalıcı ayar yoktur.
+#[cfg(not(target_os = "linux"))]
+pub fn remove_persistent() -> Result<(), ResolverError> {
+    Ok(())
 }
 
 /// Linux dışında bu mekanizma yoktur.
@@ -241,6 +328,42 @@ mod tests {
                 assert!(!arg.contains(kotu), "tehlikeli karakter: {arg}");
             }
         }
+    }
+
+    /// Kalıcı dosya, kapı numarasını da taşımalı; taşımazsa yeniden
+    /// başlatmadan sonra standart kapıya düşer ve hiçbir şey çalışmaz.
+    /// systemd anahtar satirlarini bosluksuz bekler; girintili yazmak
+    /// bazi surumlerde ayari sessizce yok sayar.
+    #[test]
+    fn kalici_dosya_satirlari_girintisiz() {
+        let icerik = dropin_contents("77.88.8.8:1253".parse().unwrap());
+        for satir in icerik.lines() {
+            assert!(
+                !satir.starts_with(' ') && !satir.starts_with('\t'),
+                "girintili satır: {satir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kalici_dosya_kapi_numarasini_tasiyor() {
+        let icerik = dropin_contents("77.88.8.8:1253".parse().unwrap());
+        assert!(icerik.contains("[Resolve]"));
+        assert!(icerik.contains("DNS=77.88.8.8:1253"), "{icerik}");
+    }
+
+    /// Kullanıcı dosyayı elle bulursa nasıl kaldıracağını görmeli.
+    #[test]
+    fn kalici_dosya_kendini_aciklıyor() {
+        let icerik = dropin_contents("1.1.1.1:53".parse().unwrap());
+        assert!(icerik.contains("TR-DPI"));
+        assert!(icerik.contains("--geri"));
+    }
+
+    #[test]
+    fn kalici_dosya_ana_yapilandirmaya_dokunmuyor() {
+        assert!(DROPIN_PATH.contains("resolved.conf.d/"), "{DROPIN_PATH}");
+        assert!(DROPIN_PATH.ends_with("trdpi.conf"));
     }
 
     #[test]

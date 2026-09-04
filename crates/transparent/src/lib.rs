@@ -24,8 +24,9 @@
 pub mod cleanup;
 pub mod nft;
 pub mod origdst;
+pub mod retry;
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,7 +34,7 @@ use std::thread;
 use std::time::Duration;
 
 use trdpi_core::backend::{Backend, BackendError, EngineId, ProbeContext, ProbeResult, Snapshot};
-use trdpi_core::profile::{FakeTrafficMode, Profile, TtlMode};
+use trdpi_core::profile::{FakeTrafficMode, FragmentationMode, Profile, TtlMode};
 use trdpi_core::score::{HealthReport, ScoreInputs};
 use trdpi_core::{Capabilities, Classification, Mechanism, SessionId};
 use trdpi_proxy::{server::write_fragments, split};
@@ -51,6 +52,8 @@ pub struct TransparentConfig {
     pub split_delay: Duration,
     /// Hedefe bağlanma zaman aşımı.
     pub connect_timeout: Duration,
+    /// Kesilen bağlantıyı yeniden deneme ayarları.
+    pub retry: retry::RetryPolicy,
 }
 
 impl Default for TransparentConfig {
@@ -60,6 +63,7 @@ impl Default for TransparentConfig {
             capture_ports: vec![443],
             split_delay: Duration::from_millis(12),
             connect_timeout: Duration::from_secs(10),
+            retry: retry::RetryPolicy::default(),
         }
     }
 }
@@ -69,6 +73,8 @@ struct Counters {
     accepted: AtomicU64,
     failed: AtomicU64,
     fragmented: AtomicU64,
+    retries: AtomicU64,
+    established: AtomicU64,
 }
 
 /// Motorun o ana kadarki sayaçları.
@@ -80,6 +86,10 @@ pub struct StatsSnapshot {
     pub failed: u64,
     /// İlk yazması parçalanarak gönderilen bağlantı sayısı.
     pub fragmented: u64,
+    /// Kesilip yeniden denenen bağlantı sayısı.
+    pub retries: u64,
+    /// Sonunda kurulabilen bağlantı sayısı.
+    pub established: u64,
 }
 
 #[derive(Debug)]
@@ -128,6 +138,8 @@ impl TransparentEngine {
             accepted: self.counters.accepted.load(Ordering::Relaxed),
             failed: self.counters.failed.load(Ordering::Relaxed),
             fragmented: self.counters.fragmented.load(Ordering::Relaxed),
+            retries: self.counters.retries.load(Ordering::Relaxed),
+            established: self.counters.established.load(Ordering::Relaxed),
         }
     }
 
@@ -395,10 +407,105 @@ fn uninstall_table(_table: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// İlk yanıtı, ayırt edilebilir biçimde bekler.
+fn read_first_response(
+    upstream: &mut TcpStream,
+    timeout: Duration,
+) -> io::Result<retry::FirstResponse> {
+    upstream.set_read_timeout(Some(timeout))?;
+    let mut buf = vec![0u8; 8 * 1024];
+    match upstream.read(&mut buf) {
+        Ok(0) => Ok(retry::FirstResponse::Closed),
+        Ok(n) => {
+            buf.truncate(n);
+            Ok(retry::FirstResponse::Data(buf))
+        }
+        Err(e) => match e.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                Ok(retry::FirstResponse::Timeout)
+            }
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {
+                Ok(retry::FirstResponse::Reset)
+            }
+            _ => match e.raw_os_error() {
+                Some(104) | Some(10054) => Ok(retry::FirstResponse::Reset),
+                Some(110) | Some(10060) => Ok(retry::FirstResponse::Timeout),
+                _ => Err(e),
+            },
+        },
+    }
+}
+
+/// Bağlantıyı kurar; kesilirse yeniden dener.
+///
+/// İstemciye henüz hiçbir bayt gitmediği için yeniden deneme görünmez:
+/// istemci yalnızca başarılı olan denemenin sonucunu görür.
+fn connect_with_retry(
+    target: SocketAddr,
+    first: &[u8],
+    fragmentation: FragmentationMode,
+    config: &TransparentConfig,
+    counters: &Counters,
+) -> io::Result<(TcpStream, Vec<u8>)> {
+    let policy = config.retry;
+    let mut son_hata = None;
+
+    for attempt in 0..policy.attempts {
+        let mut upstream = match TcpStream::connect_timeout(&target, config.connect_timeout) {
+            Ok(s) => s,
+            Err(e) => {
+                son_hata = Some(e);
+                if attempt + 1 < policy.attempts {
+                    counters.retries.fetch_add(1, Ordering::Relaxed);
+                    thread::sleep(retry::delay_for(attempt, &policy));
+                    continue;
+                }
+                break;
+            }
+        };
+        upstream.set_nodelay(true)?;
+
+        let plan = split::plan(first, fragmentation);
+        if plan.len() > 1 && attempt == 0 {
+            counters.fragmented.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Err(e) = write_fragments(&mut upstream, &plan, config.split_delay) {
+            son_hata = Some(e);
+            if attempt + 1 < policy.attempts {
+                counters.retries.fetch_add(1, Ordering::Relaxed);
+                thread::sleep(retry::delay_for(attempt, &policy));
+                continue;
+            }
+            break;
+        }
+
+        let response = read_first_response(&mut upstream, policy.first_byte_timeout)?;
+        if let retry::FirstResponse::Data(d) = response {
+            // Yanıt geldi. Bundan sonra yeniden deneme yapılamaz.
+            upstream.set_read_timeout(None)?;
+            return Ok((upstream, d));
+        }
+
+        // İstemciye hâlâ hiçbir şey gitmedi, bu yüzden yeniden denemek güvenli.
+        if !retry::should_retry(&response, attempt, &policy, false) {
+            break;
+        }
+        counters.retries.fetch_add(1, Ordering::Relaxed);
+        thread::sleep(retry::delay_for(attempt, &policy));
+    }
+
+    Err(son_hata.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "bağlantı her denemede kesildi",
+        )
+    }))
+}
+
 fn handle(
     client: TcpStream,
     listener_addr: SocketAddr,
-    fragmentation: trdpi_core::profile::FragmentationMode,
+    fragmentation: FragmentationMode,
     config: &TransparentConfig,
     counters: &Counters,
 ) -> io::Result<()> {
@@ -410,12 +517,9 @@ fn handle(
         return Ok(());
     }
 
-    let upstream = TcpStream::connect_timeout(&target, config.connect_timeout)?;
-    upstream.set_nodelay(true)?;
-
     let mut client_read = client.try_clone()?;
-    let mut upstream_write = upstream.try_clone()?;
 
+    // İlk yazmayı saklıyoruz: yeniden denemede aynısını göndereceğiz.
     let mut first = vec![0u8; 16 * 1024];
     let n = client_read.read(&mut first)?;
     if n == 0 {
@@ -423,15 +527,20 @@ fn handle(
     }
     first.truncate(n);
 
-    let plan = split::plan(&first, fragmentation);
-    if plan.len() > 1 {
-        counters.fragmented.fetch_add(1, Ordering::Relaxed);
-    }
-    write_fragments(&mut upstream_write, &plan, config.split_delay)?;
+    let (upstream, ilk_yanit) =
+        connect_with_retry(target, &first, fragmentation, config, counters)?;
+    counters.established.fetch_add(1, Ordering::Relaxed);
+
+    let mut upstream_write = upstream.try_clone()?;
+    let mut client_write = client.try_clone()?;
+
+    // Beklerken okuduğumuz yanıtı istemciye iletiyoruz; bu andan sonra
+    // yeniden deneme yapılamaz.
+    client_write.write_all(&ilk_yanit)?;
 
     let down = thread::spawn(move || {
         let mut from = upstream;
-        let mut to = client;
+        let mut to = client_write;
         let _ = io::copy(&mut from, &mut to);
         let _ = to.shutdown(Shutdown::Write);
     });
@@ -439,6 +548,7 @@ fn handle(
     let _ = io::copy(&mut client_read, &mut upstream_write);
     let _ = upstream_write.shutdown(Shutdown::Write);
     let _ = down.join();
+    let _ = client.shutdown(Shutdown::Both);
 
     Ok(())
 }

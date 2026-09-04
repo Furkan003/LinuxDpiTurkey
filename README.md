@@ -4,7 +4,7 @@ Türkiye ağlarındaki bağlantı engellerini **önce teşhis eden**, sonra uygu
 
 VPN değil. Uzak sunucu yok, hesap yok, trafik başka bir yere yönlendirilmiyor.
 
-> **Durum:** Linux'ta sahte paket motoru çalışıyor. Grafik arayüz ve otomatik profil seçimi henüz yok.
+> **Durum:** Ubuntu 24.04 üzerinde gerçek bir Türkiye hattında ölçülüp doğrulandı. Grafik arayüz henüz yok.
 
 ## Neden
 
@@ -12,48 +12,52 @@ Mevcut araçlar (GoodbyeDPI, zapret, ByeDPI) güçlü motorlar sunuyor ama kulla
 
 Fark şurada: "hangi flag'i deneyeyim" yerine "bağlantım neden bozuk" sorusuna cevap veriyor.
 
-## Koruma (Linux)
+## Kullanım
 
-Bütün uygulamalar kapsam içinde. Discord, Sober ve diğerlerinde **hiçbir ayar yapmana gerek yok.**
+Tek komut. Ölçer, gerekeni düzeltir, korur:
 
 ```bash
 sudo trdpi
-sudo trdpi --ttl 3
 ```
 
-Durdurmak için Ctrl+C — kurallar otomatik geri alınır.
+| Komut | Ne yapar |
+|---|---|
+| `sudo trdpi` | ölç, düzelt, koru |
+| `trdpi --olc` | yalnızca ölç (yetki istemez) |
+| `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
+| `sudo trdpi --durdur` | çalışan kopyaları durdur |
+| `sudo trdpi --geri` | yapılan her şeyi geri al |
 
-Nasıl çalışıyor: giden TLS ClientHello paketi yakalanır ve ondan önce **aynı sıra numarasını taşıyan, düşük TTL'li sahte bir kopya** gönderilir. Sahte paket araya giren inceleme donanımına ulaşır ama gerçek sunucuya varmadan yolda ölür. Donanım kararını sahte pakete bakarak verir; arkasından gelen gerçek paketi eşleştiremez.
+## Ölçülen sonuç
 
-Site açılmıyorsa `--ttl` değerini değiştirmeyi dene (3, 5, 7). Doğru değer, sana en yakın inceleme noktasının kaç adım uzakta olduğuna bağlıdır.
+Gerçek bir Türkiye hattında (Ubuntu 24.04), 15'er deneme:
 
-### Neden parçalama değil
+| | discord.com | roblox.com |
+|---|---|---|
+| Hiçbir şey yok | 0/15 | 0/15 |
+| Sadece adres düzeltmesi | 8/15 | 7/15 |
+| **Adres düzeltmesi + yeniden deneme** | **14/15** | **15/15** |
+| Sadece adres düzeltmesi (kontrol) | 7/15 | 8/15 |
 
-Önce TLS akışını bölmeyi denedik. Türkiye'de ölçtüğümüz hatta **hiç işe yaramadı**: sabit konumdan bölme, SNI ortasından bölme ve hiç bölmeme aynı başarısızlık oranını verdi (8 denemede 4). Bu engel akışı bölerek aşılmıyor.
+Motor kapatılıp tekrar ölçüldüğünde taban aynı yere döndü; yani fark zamanla değil yöntemle geldi.
 
-### Şeffaf yönlendirme
+## İki katmanlı engel, iki katmanlı çözüm
 
-`sudo trdpi-koruma` parçalama motorunu sistem geneline uygular. Ölçtüğümüz hatta işe yaramadı; başka davranış sergileyen ağlar için duruyor.
+**1. Adres çözümlemesine müdahale.** Sistem, engellenen alan adları için `195.175.254.2` döndürüyor — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres. O adrese hiçbir kapıdan ulaşılamıyor.
 
-Çıkışta kaç bağlantının geçtiğini ve kaçının parçalandığını yazar:
+Basit görünen çözüm işe yaramıyor: standart kapıdaki dış çözümleyicilerin tamamı kapalı. Çalışan tek yol standart dışı kapıdan sormak. Program adayları **deneyerek** seçiyor ve ayarı yeniden başlatmaya dayanıklı biçimde yazıyor.
 
-```
-Bağlantı: 4 · parçalanan: 4 · başarısız: 0
-```
+**2. Bağlantıların yarısının rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında resetleniyor. Başarısızlıklar kümelenmiyor, birbirinden bağımsız — yani yeniden denemek işe yarıyor.
 
-`Bağlantı: 0` görüyorsan yönlendirme çalışmamış demektir.
+Yeniden deneme yalnızca **istemciye tek bayt bile gitmeden önce** yapılıyor. Sunucudan yanıt gelip aktarıldıktan sonra yeniden denemek akışı bozardı.
 
-**Kapsam dışı:** UDP trafiği. Yani QUIC ve oyunların gerçek zamanlı bağlantısı bu yöntemden geçmez.
+## Denenip işe yaramayanlar
 
-### Bir şeyler ters giderse
+Bunları ölçtük ve bu hatta fark yaratmadıklarını gördük. Kod duruyor; başka davranış sergileyen ağlarda gerekebilir.
 
-Süreç düzgün kapanamazsa (`kill -9`, elektrik kesintisi) nftables kuralı yerinde kalır ve **tüm TCP:443 trafiği kopar.** Kurtarma:
+**TLS akışını parçalama.** Sabit konumdan bölme, alan adının ortasından bölme ve hiç bölmeme aynı başarısızlık oranını verdi (8 denemede 4).
 
-```bash
-sudo trdpi-koruma --temizle
-```
-
-Uygulama zaten her açılışta kendine ait kalıntı kuralları arayıp siler.
+**Düşük ömürlü sahte paket.** GoodbyeDPI'ın Windows'ta kullandığı teknik. TTL 1'den 8'e kadar tarandı; hiçbiri tabandan iyi değildi. Motor mekanik olarak doğru çalışıyor (paketleri yakalıyor, sahte kopyayı kuruyor ve gönderiyor) ama bu engeli aşmıyor.
 
 ## Teşhis motoru
 
@@ -103,8 +107,10 @@ crates/
 ├─ core/          kanonik tipler ve sözleşmeler — I/O yok, platform kodu yok
 ├─ diagnostics/   ağ ölçümü — ayrıcalık gerektirmez
 ├─ proxy/         yerel SOCKS5 motoru — ayrıcalık gerektirmez
-├─ transparent/   şeffaf yönlendirme (Linux) — nftables
-└─ nfqueue/       sahte paket + TTL motoru (Linux) — NFQUEUE + ham soket
+├─ transparent/   yönlendirme + yeniden deneme (Linux) — nftables
+├─ nfqueue/       sahte paket + TTL motoru (Linux) — NFQUEUE + ham soket
+├─ dns/           çalışan adres kaynağı bulma ve yönlendirme
+└─ cli/           tek komut: trdpi
 ```
 
 `crates/core` projenin tek normatif sözleşme kaynağıdır. `TR-DPI-Adaptive-*.md` dosyaları gerekçe ve arka plan belgeleridir; tip tanımı için normatif değildir.
@@ -150,7 +156,10 @@ Testlerin tamamı gerçek ağ backend'i olmadan çalışır; ağ gerektiren tek 
 - [x] Şeffaf yönlendirme (Linux, nftables)
 - [x] Yetim kural temizliği ve sinyal ile güvenli kapanış
 - [x] Sahte paket + TTL motoru (NFQUEUE)
-- [ ] Politika motoru — teşhis sonucundan otomatik profil seçimi
+- [x] Adres çözümleme düzeltmesi (kalıcı)
+- [x] Yeniden deneme motoru
+- [x] Tek komut arayüzü
+- [ ] Açılışta otomatik başlatma
 - [ ] QUIC erişilebilirlik ölçümü
 - [ ] Grafik arayüz
 - [ ] AppImage / deb / rpm paketleme

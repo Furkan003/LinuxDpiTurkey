@@ -97,8 +97,8 @@ fn main() {
     let sayac = engine.stats();
     println!();
     println!(
-        "Bağlantı: {} · parçalanan: {} · başarısız: {}",
-        sayac.accepted, sayac.fragmented, sayac.failed
+        "Bağlantı: {} · kurulan: {} · yeniden deneme: {} · başarısız: {}",
+        sayac.accepted, sayac.established, sayac.retries, sayac.failed
     );
     if sayac.accepted == 0 {
         println!("Hiçbir trafik motora uğramadı — yönlendirme çalışmamış olabilir.");
