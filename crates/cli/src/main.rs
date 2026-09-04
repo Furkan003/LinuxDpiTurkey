@@ -172,6 +172,12 @@ fn main() {
         "Toplam — bağlantı: {} · kurulan: {} · yeniden deneme: {} · başarısız: {}",
         s.accepted, s.established, s.retries, s.failed
     );
+    if s.alternates > 0 {
+        println!(
+            "{} bağlantı, özgün adres çalışmadığı için başka bir adresten kuruldu.",
+            s.alternates
+        );
+    }
     if s.accepted == 0 {
         println!("Hiçbir trafik motora uğramadı; yönlendirme çalışmamış olabilir.");
     }

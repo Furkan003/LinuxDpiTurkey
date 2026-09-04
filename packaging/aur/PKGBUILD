@@ -10,7 +10,7 @@
 # yani Arch'ta da calisiyor. Yan fayda: kullanici derleme beklemiyor.
 pkgname=trdpi-bin
 _pkgname=trdpi
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Turkiye'de engellenen sitelere erisimi acan uygulama"
 arch=('x86_64')
@@ -23,7 +23,7 @@ conflicts=("$_pkgname")
 optdepends=('systemd-resolvconf: adres ayarinin kalici yazilmasi')
 
 source=("$_pkgname-$pkgver.deb::$url/releases/download/v$pkgver/${_pkgname}_${pkgver}_amd64.deb")
-sha256sums=('c0604f99d3d699ff89c265fd44109c670d0fed8224868c0f570dcb2e59122951')
+sha256sums=('9b30dae06c9b594f4f0d8e0af5fdbfa3a584e059006c140ce2a900b1fcfd6b14')
 noextract=("$_pkgname-$pkgver.deb")
 
 package() {

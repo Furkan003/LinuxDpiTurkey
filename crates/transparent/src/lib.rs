@@ -39,7 +39,7 @@ use trdpi_core::backend::{Backend, BackendError, EngineId, ProbeContext, ProbeRe
 use trdpi_core::profile::{FakeTrafficMode, FragmentationMode, Profile, QuicMode, TtlMode};
 use trdpi_core::score::{HealthReport, ScoreInputs};
 use trdpi_core::{Capabilities, Classification, Mechanism, SessionId};
-use trdpi_proxy::{server::write_fragments, split};
+use trdpi_proxy::{clienthello, server::write_fragments, split};
 
 use nft::RedirectRules;
 
@@ -64,8 +64,32 @@ impl Default for TransparentConfig {
             port: 9443,
             capture_ports: vec![443],
             split_delay: Duration::from_millis(12),
-            connect_timeout: Duration::from_secs(10),
+            // TCP el sıkışması bir gidiş-dönüşte biter; kıtalar arası bir
+            // hatta bile yarım saniye. Bunu aşan bekleme, yanıt gelmeyeceği
+            // anlamına gelir. Cömert bir süre koymak yalnızca başarısız
+            // bağlantıyı uzatır ve kullanıcı bunu yavaşlık olarak hisseder:
+            // dört deneme, süre başına dört kat uzuyor.
+            connect_timeout: Duration::from_secs(2),
             retry: retry::RetryPolicy::default(),
+        }
+    }
+}
+
+impl TransparentConfig {
+    /// Özgün adres çalışmadığında kullanılan, daha aceleci ayar.
+    ///
+    /// Buraya gelindiğinde zaten bir tur beklenmiş oluyor. Alternatif adres
+    /// çalışıyorsa hemen cevap verir; çalışmıyorsa ısrar etmenin anlamı yok —
+    /// sıradakine geçmek daha hızlı.
+    fn alternatif(&self) -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(2),
+            retry: retry::RetryPolicy {
+                attempts: 1,
+                first_byte_timeout: Duration::from_secs(2),
+                ..self.retry
+            },
+            ..self.clone()
         }
     }
 }
@@ -77,6 +101,7 @@ struct Counters {
     fragmented: AtomicU64,
     retries: AtomicU64,
     established: AtomicU64,
+    alternates: AtomicU64,
 }
 
 /// Motorun o ana kadarki sayaçları.
@@ -92,6 +117,9 @@ pub struct StatsSnapshot {
     pub retries: u64,
     /// Sonunda kurulabilen bağlantı sayısı.
     pub established: u64,
+    /// Özgün adres tümüyle çalışmadığı için başka bir adresten kurulan
+    /// bağlantı sayısı.
+    pub alternates: u64,
 }
 
 #[derive(Debug)]
@@ -145,6 +173,7 @@ impl TransparentEngine {
             fragmented: self.counters.fragmented.load(Ordering::Relaxed),
             retries: self.counters.retries.load(Ordering::Relaxed),
             established: self.counters.established.load(Ordering::Relaxed),
+            alternates: self.counters.alternates.load(Ordering::Relaxed),
         }
     }
 
@@ -509,6 +538,66 @@ fn connect_with_retry(
     }))
 }
 
+/// Özgün adres çalışmadığında denenecek en fazla adres sayısı.
+///
+/// Sınır gerekli: engel gerçekten adres bazlıysa listedeki her adres sırayla
+/// zaman aşımına uğrar ve kullanıcı bunu bekleme olarak hisseder. Üç adres,
+/// CDN'lerin döndürdüğü listenin anlamlı bir bölümünü kapsıyor.
+const EN_FAZLA_ALTERNATIF: usize = 3;
+
+/// Bir adresin dış dünyada gerçekten hedef olabilecek bir adres olup
+/// olmadığı.
+///
+/// Çözümleme sonucuna güvenilemez: zehirlenmiş bir yanıt yerel ağdaki bir
+/// adresi gösterebilir ve o adrese bağlanmak, kullanıcının kendi ağındaki bir
+/// makineye bağlanmak demek olurdu.
+fn dis_adres(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || v4.is_documentation())
+        }
+        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_multicast() || v6.is_unspecified()),
+    }
+}
+
+/// Özgün adres hiç çalışmadığında denenecek başka adresler.
+///
+/// Aynı alan adı çoğu zaman birden fazla adreste duruyor. Engel adreslerin
+/// yalnızca bir bölümüne konmuşsa kalanlardan biri çalışır — IPv4 kapalıyken
+/// IPv6 açık olabilir, bu yüzden aileyi de kısıtlamıyoruz.
+///
+/// Alan adını istemcinin gönderdiği ClientHello'dan okuyoruz; başka türlü
+/// elimizde yalnızca çalışmadığı belli olan adres olurdu.
+fn alternatif_adresler(first: &[u8], target: SocketAddr) -> Vec<SocketAddr> {
+    use std::net::ToSocketAddrs;
+
+    let Some(sni) = clienthello::find_sni(first) else {
+        return Vec::new();
+    };
+
+    let Ok(adresler) = (sni.host.as_str(), target.port()).to_socket_addrs() else {
+        return Vec::new();
+    };
+
+    let mut secilen: Vec<SocketAddr> = Vec::new();
+    for a in adresler {
+        if a.ip() == target.ip() || !dis_adres(a.ip()) || secilen.contains(&a) {
+            continue;
+        }
+        secilen.push(a);
+        if secilen.len() == EN_FAZLA_ALTERNATIF {
+            break;
+        }
+    }
+    secilen
+}
+
 fn handle(
     client: TcpStream,
     listener_addr: SocketAddr,
@@ -535,7 +624,28 @@ fn handle(
     first.truncate(n);
 
     let (upstream, ilk_yanit) =
-        connect_with_retry(target, &first, fragmentation, config, counters)?;
+        match connect_with_retry(target, &first, fragmentation, config, counters) {
+            Ok(v) => v,
+            Err(e) => {
+                // Adres tümüyle çalışmıyor. Aynı alan adının başka adresleri
+                // varsa engel hepsine konmamış olabilir.
+                //
+                // Buraya yalnızca istemciye tek bayt bile gitmemişken
+                // gelinir; bu yüzden başka bir adresten devam etmek görünmez.
+                let mut sonuc = Err(e);
+                let acele = config.alternatif();
+                for alternatif in alternatif_adresler(&first, target) {
+                    if let Ok(v) =
+                        connect_with_retry(alternatif, &first, fragmentation, &acele, counters)
+                    {
+                        counters.alternates.fetch_add(1, Ordering::Relaxed);
+                        sonuc = Ok(v);
+                        break;
+                    }
+                }
+                sonuc?
+            }
+        };
     counters.established.fetch_add(1, Ordering::Relaxed);
 
     let mut upstream_write = upstream.try_clone()?;
@@ -594,6 +704,98 @@ mod tests {
         assert!(TransparentEngine::supports_profile(&p));
         p.protocols.quic = QuicMode::Desync;
         assert!(!TransparentEngine::supports_profile(&p));
+    }
+
+    /// Zehirlenmiş bir yanıt yerel ağdaki bir adresi gösterebilir; oraya
+    /// bağlanmak kullanıcının kendi ağındaki bir makineye bağlanmak olurdu.
+    #[test]
+    fn yerel_adresler_alternatif_sayilmiyor() {
+        for kotu in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "::1",
+            "::",
+        ] {
+            assert!(
+                !dis_adres(kotu.parse().unwrap()),
+                "dış adres sayıldı: {kotu}"
+            );
+        }
+
+        for iyi in ["1.1.1.1", "162.159.128.233", "2606:4700::1111"] {
+            assert!(dis_adres(iyi.parse().unwrap()), "reddedildi: {iyi}");
+        }
+    }
+
+    /// SNI yoksa alan adını bilmiyoruz; uydurmak yerine hiç denemiyoruz.
+    #[test]
+    fn sni_yoksa_alternatif_aranmiyor() {
+        let hedef: SocketAddr = "93.184.216.34:443".parse().unwrap();
+        assert!(alternatif_adresler(b"bu bir ClientHello degil", hedef).is_empty());
+        assert!(alternatif_adresler(&[], hedef).is_empty());
+    }
+
+    /// Test girdisi olarak asgari bir ClientHello kurar.
+    fn client_hello(sni: &str) -> Vec<u8> {
+        let mut sunucu_adi = vec![0x00];
+        sunucu_adi.extend_from_slice(&(sni.len() as u16).to_be_bytes());
+        sunucu_adi.extend_from_slice(sni.as_bytes());
+
+        let mut liste = (sunucu_adi.len() as u16).to_be_bytes().to_vec();
+        liste.extend_from_slice(&sunucu_adi);
+
+        let mut ext = 0x0000u16.to_be_bytes().to_vec();
+        ext.extend_from_slice(&(liste.len() as u16).to_be_bytes());
+        ext.extend_from_slice(&liste);
+
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0xAA; 32]); // random
+        body.push(0); // session_id yok
+        body.extend_from_slice(&2u16.to_be_bytes());
+        body.extend_from_slice(&[0x13, 0x01]); // cipher_suites
+        body.extend_from_slice(&[0x01, 0x00]); // compression
+        body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+        body.extend_from_slice(&ext);
+
+        let mut hs = vec![0x01];
+        hs.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        hs.extend_from_slice(&body);
+
+        let mut kayit = vec![0x16, 0x03, 0x01];
+        kayit.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+        kayit.extend_from_slice(&hs);
+        kayit
+    }
+
+    /// Çalışmadığı belli olan adresi tekrar denemek anlamsız.
+    #[test]
+    fn ozgun_adres_alternatif_listesine_girmiyor() {
+        use std::net::ToSocketAddrs;
+
+        let ilk = client_hello("localhost");
+        assert_eq!(
+            clienthello::find_sni(&ilk).map(|s| s.host),
+            Some("localhost".to_string()),
+            "test girdisi geçerli bir ClientHello değil"
+        );
+
+        // Çözümleme ortama bağlı; hangi adres dönerse dönsün özgün adres
+        // listede olmamalı — ve yerel adresler hiç girmemeli.
+        if let Some(hedef) = ("localhost", 443u16)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+        {
+            let alt = alternatif_adresler(&ilk, hedef);
+            assert!(!alt.contains(&hedef));
+            assert!(alt.is_empty(), "localhost dış adres sayıldı: {alt:?}");
+        }
     }
 
     #[test]

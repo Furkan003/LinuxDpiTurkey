@@ -87,7 +87,20 @@ Uygulama QUIC'i kapatıyor: UDP 443 **reddediliyor**, sessizce düşürülmüyor
 
 Yalnızca 443 kapatılıyor. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile açık bırakabilir.
 
-**3. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
+**3. Adresin tümüyle kapatılması.** Bazen engel alan adına değil, belirli bir adrese konuyor: o adrese giden hiçbir paket dönmüyor. Aynı alan adı çoğu zaman birden fazla adreste durduğu için (büyük siteler onlarca adres kullanır), engel hepsine konmamış olabilir.
+
+Özgün adres hiçbir denemede yanıt vermezse uygulama, istemcinin gönderdiği site adını okuyup **adresi kendisi yeniden çözümlüyor** ve kalan adresleri sırayla deniyor. IPv4 kapalıyken IPv6 açık olabildiği için aile kısıtlaması da yok.
+
+Ölçüldü — bir adres karadeliğe atıldı, aynı istek iki kez yapıldı:
+
+| | Sonuç |
+|---|---|
+| Koruma kapalı | açılmıyor (40 s zaman aşımı) |
+| Koruma açık | **8.5 s'de açılıyor**, başka adresten |
+
+Yeniden çözümlemede yalnızca dış adresler kabul ediliyor: zehirlenmiş bir yanıt yerel ağdaki bir makineyi gösterirse ona bağlanılmaz.
+
+**4. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
 
 Yeniden deneme yalnızca tarayıcına ya da uygulamana tek bayt bile ulaşmadan önce yapılıyor. Yanıt gelmeye başladıktan sonra yeniden denemek veriyi bozardı.
 
@@ -132,7 +145,9 @@ Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kap
 
 ## Ne yapmaz
 
-**Gerçek zamanlı trafikteki engeli açmaz.** Yukarıdaki ölçüm "kapalı" diyorsa engel UDP tarafında demektir; bunu aşmak paket düzeyinde ayrı bir iş ve henüz yapılmıyor.
+**Gerçek zamanlı trafikteki engeli açmaz.** Yukarıdaki ölçüm "kapalı" diyorsa engel UDP tarafında demektir; bunu aşmak paket düzeyinde ayrı bir iş ve henüz yapılmıyor. Ölçtüğümüz hiçbir hatta bu yol kapalı çıkmadı — kapalı bir hat görmeden yazılacak çözüm, doğruluğu sınanamayan bir çözüm olurdu.
+
+**Adresin her yolunun kapatılmasını aşamaz.** Alan adının bütün adresleri engellenmişse yapılabilecek bir şey kalmıyor; trafiği başka bir ülkeden geçirmek gerekir ve bu VPN demektir.
 
 **Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
 
@@ -157,7 +172,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 225 test
+cargo test                                   # 228 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -191,7 +206,8 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
-- [ ] Gerçek zamanlı trafikte engel aşma
+- [x] Adres engelinde başka adrese geçme
+- [ ] Gerçek zamanlı trafikte engel aşma *(ölçümde kapalı bir hat görülünce)*
 
 ## Lisans
 
