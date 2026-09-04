@@ -101,8 +101,12 @@ pub fn compare(remote: Version, local: Version) -> UpdateStatus {
 }
 
 /// Sürüm bilgisinin okunacağı adres.
+///
+/// Depo taşınırsa burası da güncellenmeli. Adres yanlış ya da erişilemez
+/// olursa kontrol sessizce [`UpdateStatus::Unknown`] döner; araç çalışmaya
+/// devam eder.
 pub const VERSION_URL: &str =
-    "https://raw.githubusercontent.com/furkans6781/LinuxDpiTurkey/main/SURUM";
+    "https://raw.githubusercontent.com/DEPO_SAHIBI/LinuxDpiTurkey/main/SURUM";
 
 /// Yeni sürüm var mı diye bakar.
 ///

@@ -1,16 +1,22 @@
-# TR-DPI Adaptive
+# TR-DPI
 
-Türkiye ağlarındaki bağlantı engellerini **önce teşhis eden**, sonra uygun yöntemi uygulayan açık kaynak ağ aracı. Linux ve Windows.
+Türkiye'de engellenen sitelere erişimi açan Linux uygulaması. Aç, düğmeye bas, biter.
 
-VPN değil. Uzak sunucu yok, hesap yok, trafik başka bir yere yönlendirilmiyor.
+<p align="center">
+  <img src="packaging/ekran.png" alt="TR-DPI penceresi" width="380">
+</p>
 
-> **Durum:** Ubuntu 24.04 üzerinde gerçek bir Türkiye hattında ölçülüp doğrulandı. Grafik arayüz henüz yok.
+VPN değil. Uzak sunucu yok, hesap yok, üyelik yok. Trafiğin başka bir yere yönlendirilmiyor.
+
+---
 
 ## Neden
 
-Mevcut araçlar (GoodbyeDPI, zapret, ByeDPI) güçlü motorlar sunuyor ama kullanıcıya onlarca parametre bırakıyor. Bu proje önce ağını ölçüyor, ne tür bir müdahale olduğunu sınıflandırıyor, sonra ona göre davranıyor.
+Türkiye'de erişim engelleri sürekli artıyor. Windows'ta GoodbyeDPI gibi araçlar var; Linux'ta zapret var ama kullanımı zor — onlarca parametre, terminal, yapılandırma dosyaları.
 
-Fark şurada: "hangi flag'i deneyeyim" yerine "bağlantım neden bozuk" sorusuna cevap veriyor.
+Windows'tan Linux'a geçen birinin bunlarla uğraşmaması gerekiyor. Bu uygulama o boşluğu dolduruyor: **kurulum çift tıkla, kullanım tek düğmeyle.**
+
+Bir de "hangi parametreyi deneyeyim" sorusunu ortadan kaldırıyor — önce ağını ölçüyor, engelin türünü bulup uygun yöntemi kendisi seçiyor.
 
 ## Kurulum
 
@@ -24,186 +30,128 @@ sudo apt install ./trdpi_0.1.0_amd64.deb
 
 ## Kullanım
 
-Menüden aç, **BAŞLAT**'a bas. Yönetici parolası bir kez sorulur.
+Menüden **TR-DPI**'yi aç, **BAŞLAT**'a bas. Yönetici parolan bir kez sorulur.
 
-Pencere açık kalmak zorunda değil; kapatınca koruma çalışmaya devam eder.
+Pencereyi kapatabilirsin; koruma çalışmaya devam eder. Durdurmak için tekrar açıp **DURDUR**'a bas.
 
-Terminal isteyenler için:
+Terminal kullanmak isteyenler için:
 
 | Komut | Ne yapar |
 |---|---|
 | `sudo trdpi` | ölç, düzelt, koru |
-| `trdpi --olc` | yalnızca ölç (yetki istemez) |
+| `trdpi --olc` | yalnızca ölç, hiçbir şey değiştirme (yetki istemez) |
 | `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
 | `sudo trdpi --durdur` | çalışan kopyaları durdur |
-| `sudo trdpi --geri` | yapılan her şeyi geri al |
+| `sudo trdpi --geri` | yapılan her değişikliği geri al |
 
-## Kaynak kullanımı
+## Gerçekten işe yarıyor mu
 
-Sürekli çalışan tek şey motor; pencere yalnızca sen açtığında duruyor.
-
-| | Bellek | Dosya |
-|---|---|---|
-| Motor (sürekli çalışan) | **0.65 MB** | 0.9 MB |
-| Pencere (açıkken) | **16 MB** | 1.2 MB |
-| *Karşılaştırma: NetworkManager* | *18 MB* | |
-| *Karşılaştırma: Thunar* | *42 MB* | |
-
-Arayüz için web motoru ve OpenGL kullanılmıyor. Aynı pencereyi OpenGL ile de yazıp ölçtük: 115 MB ve 7.3 MB dosya. Ölçüm kararı verdi.
-
-## Hangi dağıtımlarda çalışır
-
-Paket, desteklenmek istenen **en eski** dağıtımda derlenir; eski kütüphaneyle derlenen yenide çalışır, tersi çalışmaz. Şu an glibc 2.34 isteniyor:
-
-Ubuntu 22.04+ · Debian 12+ · Mint · Pop!_OS · Zorin · elementary · Fedora 36+ · Arch/Manjaro
-
-Motor tamamen durağan derlendiği için hiçbir sistem kütüphanesine bağlı değil.
-
-## Güncelleme
-
-Program açılınca yeni sürüm var mı diye bakar ve varsa söyler. **Kendiliğinden kurmaz.**
-
-Sebebi: motor yönetici yetkisiyle çalışıyor. Kendiliğinden güncelleme, "internetten inen dosyayı sorgusuz root olarak çalıştır" demek olurdu. Üstelik güncelleme kaynağının kendisi de engellenebilir.
-
-## Ölçülen sonuç
-
-Gerçek bir Türkiye hattında (Ubuntu 24.04), 15'er deneme:
+Gerçek bir Türkiye hattında ölçüldü (Ubuntu 24.04, her hedefe 15 deneme). Koruma kapatılıp tekrar açılarak kontrol edildi:
 
 | | discord.com | roblox.com |
 |---|---|---|
-| Hiçbir şey yok | 0/15 | 0/15 |
-| Sadece adres düzeltmesi | 8/15 | 7/15 |
-| **Adres düzeltmesi + yeniden deneme** | **14/15** | **15/15** |
-| Sadece adres düzeltmesi (kontrol) | 7/15 | 8/15 |
+| Koruma yok | 0/15 | 0/15 |
+| Yalnızca adres düzeltmesi | 8/15 | 7/15 |
+| **Tam koruma** | **14/15** | **15/15** |
+| Yalnızca adres düzeltmesi *(kontrol)* | 7/15 | 8/15 |
 
-Motor kapatılıp tekrar ölçüldüğünde taban aynı yere döndü; yani fark zamanla değil yöntemle geldi.
+## Nasıl çalışıyor
 
-## İki katmanlı engel, iki katmanlı çözüm
+Ölçtüğümüz hatta engel **iki katmanlıydı**; uygulama ikisini de çözüyor.
 
-**1. Adres çözümlemesine müdahale.** Sistem, engellenen alan adları için `195.175.254.2` döndürüyor — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres. O adrese hiçbir kapıdan ulaşılamıyor.
+**1. Adres çözümlemesine müdahale.** Engellenen siteler sorulduğunda sistem sahte bir adres alıyor (`195.175.254.2` — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres). O adrese hiçbir şekilde ulaşılamıyor.
 
-Basit görünen çözüm işe yaramıyor: standart kapıdaki dış çözümleyicilerin tamamı kapalı. Çalışan tek yol standart dışı kapıdan sormak. Program adayları **deneyerek** seçiyor ve ayarı yeniden başlatmaya dayanıklı biçimde yazıyor.
+Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor ve ayarı yeniden başlatmaya dayanıklı biçimde yazıyor.
 
-**2. Bağlantıların yarısının rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında resetleniyor. Başarısızlıklar kümelenmiyor, birbirinden bağımsız — yani yeniden denemek işe yarıyor.
+**2. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
 
-Yeniden deneme yalnızca **istemciye tek bayt bile gitmeden önce** yapılıyor. Sunucudan yanıt gelip aktarıldıktan sonra yeniden denemek akışı bozardı.
+Yeniden deneme yalnızca tarayıcına ya da uygulamana tek bayt bile ulaşmadan önce yapılıyor. Yanıt gelmeye başladıktan sonra yeniden denemek veriyi bozardı.
 
 ## Denenip işe yaramayanlar
 
-Bunları ölçtük ve bu hatta fark yaratmadıklarını gördük. Kod duruyor; başka davranış sergileyen ağlarda gerekebilir.
+Bunları yazdık, ölçtük ve bu hatta fark yaratmadıklarını gördük. Kod duruyor; başka davranan ağlarda gerekebilir.
 
-**TLS akışını parçalama.** Sabit konumdan bölme, alan adının ortasından bölme ve hiç bölmeme aynı başarısızlık oranını verdi (8 denemede 4).
+**Trafiği parçalama.** Sabit konumdan bölme, site adının ortasından bölme, hiç bölmeme — üçü de aynı başarısızlık oranını verdi.
 
-**Düşük ömürlü sahte paket.** GoodbyeDPI'ın Windows'ta kullandığı teknik. TTL 1'den 8'e kadar tarandı; hiçbiri tabandan iyi değildi. Motor mekanik olarak doğru çalışıyor (paketleri yakalıyor, sahte kopyayı kuruyor ve gönderiyor) ama bu engeli aşmıyor.
+**Düşük ömürlü sahte paket.** GoodbyeDPI'ın Windows'ta kullandığı teknik. Ömür değeri 1'den 8'e tarandı, hiçbiri tabandan iyi çıkmadı. Motor mekanik olarak doğru çalışıyor — paketi yakalıyor, sahte kopyayı kuruyor, gönderiyor — ama bu engeli aşmıyor.
 
-## Teşhis motoru
+## Kaynak kullanımı
 
-Ayrıcalık gerektirmez, sistemde hiçbir şeyi değiştirmez.
+Sürekli çalışan tek şey motor. Pencere yalnızca sen açtığında duruyor.
 
-```bash
-cargo run -p trdpi-diagnostics --example teshis
-cargo run -p trdpi-diagnostics --example teshis -- discord.com www.instagram.com
-```
-
-```
-discord.com  [ölçüm]
-  OK   DnsIntegrity             -  healthy            5 adres
-  OK   TcpConnect           21 ms  healthy
-  OK   TlsHandshake         21 ms  healthy
-```
-
-Ayırt ettiği durumlar:
-
-```
-healthy  degraded  throttled  quic_blocked
-dns_tampered  tcp_reset  tls_interference  timeout  unknown
-```
-
-`tls_interference` ile `timeout` arasındaki fark bu projede önemli: birincisi ClientHello yazıldıktan *sonra* gelen reset (Türkiye'de gözlenen tipik davranış), ikincisi yanıtsızlık. Bu ayrımı koruyabilmek için TLS handshake'i hazır kütüphane yerine elle ölçülüyor — `rustls` gibi kütüphaneler her iki durumu da tek bir "handshake failed"e indirger.
-
-## Yerel proxy (Windows ve Linux)
-
-Yönetici yetkisi istemez ama yalnızca kendisine yönlendirilen uygulamaları korur.
-
-```bash
-cargo run -p trdpi-proxy --bin trdpi-proxy -- --port 1080
-```
-
-Firefox: **Ayarlar → Ağ Ayarları → Elle proxy → SOCKS v5**, `127.0.0.1:1080`, *"SOCKS v5 kullanırken DNS'i proxy üzerinden çöz"* işaretli.
-
-| Seçenek | Değer | Varsayılan |
+| | Bellek | Dosya |
 |---|---|---|
-| `--port` | dinlenecek port | 1080 |
-| `--strateji` | `sni` \| `kapali` \| `sabit:<konum>` | `sni` |
-| `--gecikme` | parçalar arası bekleme (ms) | 12 |
+| Motor *(sürekli çalışan)* | **0.65 MB** | 0.9 MB |
+| Pencere *(açıkken)* | **16 MB** | 1.2 MB |
+| *NetworkManager (karşılaştırma)* | *18 MB* | |
+| *Thunar (karşılaştırma)* | *42 MB* | |
 
-## Yapı
+Arayüzde web motoru ve OpenGL kullanılmıyor. Aynı pencereyi OpenGL ile de yazıp ölçtük: 115 MB. Ölçüm kararı verdi.
 
-```
-crates/
-├─ core/          kanonik tipler ve sözleşmeler — I/O yok, platform kodu yok
-├─ diagnostics/   ağ ölçümü — ayrıcalık gerektirmez
-├─ proxy/         yerel SOCKS5 motoru — ayrıcalık gerektirmez
-├─ transparent/   yönlendirme + yeniden deneme (Linux) — nftables
-├─ nfqueue/       sahte paket + TTL motoru (Linux) — NFQUEUE + ham soket
-├─ dns/           çalışan adres kaynağı bulma ve yönlendirme
-├─ cli/           tek komut: trdpi
-└─ gui/           pencere — web motoru yok, OpenGL yok
-```
+## Hangi dağıtımlarda çalışır
 
-`crates/core` projenin tek normatif sözleşme kaynağıdır. `TR-DPI-Adaptive-*.md` dosyaları gerekçe ve arka plan belgeleridir; tip tanımı için normatif değildir.
+Ubuntu 22.04+ · Debian 12+ · Linux Mint · Pop!_OS · Zorin · elementary · Fedora 36+ · Arch / Manjaro
 
-## Tasarım kuralları
+Paket, desteklenmek istenen **en eski** dağıtımda derleniyor: eski kütüphaneyle derlenen yenide çalışır, tersi çalışmaz. Motor tamamen durağan derlendiği için hiçbir sistem kütüphanesine bağlı değil.
 
-- **Yalnızca kendi objelerimize dokunuruz.** Oluşturulan her nftables tablosu oturum kimliğiyle etiketlenir. `docker0`, `ufw-*`, `firewalld` gibi yabancı objeler ne yedeklenir ne silinir — ve hiçbir komut `flush ruleset` üretmez.
-- **Her sistem değişikliği snapshot + geri alma ile yapılır.** `Backend::rollback` snapshot alır; almayan bir imza kabul edilmez.
-- **Motor çökerse internet kesilmemeli.** Kuyruk kuralı `bypass` bayrağıyla kurulur: dinleyen program yoksa paketler düşürülmez, olduğu gibi geçer.
-- **Geri alma sırası önemlidir.** Önce nftables kuralı kaldırılır, sonra dinleyici kapatılır. Tersi olsaydı trafik var olmayan bir porta yönlenir ve ağ tamamen kopardı.
-- **Ölçüm yokluğu sağlık kanıtı değildir.** Veri toplanamadıysa sonuç `unknown`, `healthy` değil.
-- **Kapalı port sansür değildir.** Bağlantı reddi ve erişilemeyen yol `unknown` sayılır.
-- **Yapamadığımız tekniği sessizce yok saymayız.** Kullanıcı alanı motorları sahte paket ve TTL tekniği uygulayamaz; bunları isteyen profil reddedilir. Sessizce yok saymak başarısızlığın yanlış sebebe atfedilmesine yol açardı.
-- **`nft` komutuna argüman dizisi verilir**, kabuk dizesi değil. Dinamik değerler (tablo adı, portlar) alfanumerik olmaya zorlanır.
-- **Kullanıcıya terminal komutu önerilmez.** Her hata durumunun arayüzde karşılığı vardır.
-- **Karar distro adına değil yetenek tespitine dayanır.** `/etc/os-release` yalnızca gösterim içindir.
+## Ne yapmaz
+
+**UDP trafiğini kapsamaz.** Oyunların gerçek zamanlı bağlantısı bu yöntemden geçmez. Roblox'a giriş yapmak çalışır; oyun içi bağlantı farklı bir yol kullanır.
+
+**Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
 
 ## Gizlilik
 
-Telemetri yok. Ölçüm sonuçları hiçbir sunucuya gönderilmez.
+Telemetri yok. Ölçüm sonuçları hiçbir sunucuya gönderilmiyor.
 
-Ölçüm hedefleri sabittir ve gezinme geçmişinden türetilmez; sonuçlarda trafik içeriği, payload veya tam URL saklanmaz.
+Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendiliğinden kurmaz.** Motor yönetici yetkisiyle çalıştığı için, sessizce indirilen bir dosyayı root olarak çalıştırmak kabul edilemez bir risk olurdu.
 
-Şunun farkında ol: **teşhis ölçümünün kendisi ağ üzerinde gözlemlenebilir.** Uygulama bilinen hedeflere istek atar ve bu, bağlantını sağlayan taraf için görünür bir izdir. Bu yüzden hedef listesi kısa tutulur ve ölçüm arka planda sürekli çalıştırılmaz.
+Şunun farkında ol: **ölçümün kendisi ağ üzerinde gözlemlenebilir.** Uygulama bilinen hedeflere istek atar; bu, bağlantını sağlayan taraf için görünür bir izdir. Bu yüzden hedef listesi kısa tutuluyor ve ölçüm arka planda sürekli çalıştırılmıyor.
+
+## Güvenlik tasarımı
+
+- **Pencere asla root çalışmaz.** Yetki gereken işler polkit ile yapılır; masaüstü kendi parola penceresini gösterir.
+- **Yalnızca kendi kurallarımıza dokunuruz.** Oluşturulan her firewall kuralı oturum kimliğiyle etiketlenir. Docker, güvenlik duvarı gibi yabancı kurallar ne yedeklenir ne silinir — ve hiçbir komut toplu silme yapmaz.
+- **Motor çökerse internet kesilmez.** Kural, dinleyen program yoksa paketleri geçiren biçimde kurulur.
+- **Her değişiklik geri alınabilir.** Paket kaldırılırken ağ ayarları da eski haline döner.
+- **Ölçüm yokluğu "sorun yok" sayılmaz.** Veri toplanamadıysa sonuç *bilinmiyor*'dur.
 
 ## Geliştirme
 
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test
+cargo test                                   # 223 test
 cargo clippy --all-targets -- -D warnings
-cargo fmt
+cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
+bash packaging/deb-olustur.sh                # .deb üret
 ```
 
-Testlerin tamamı gerçek ağ backend'i olmadan çalışır; ağ gerektiren tek şey `teshis` örneğidir. Linux'a özel kod WSL2 üzerinde de derlenip test edilebilir — WSL2 çekirdeği nftables ve NFQUEUE destekler.
+```
+crates/
+├─ core/          kanonik tipler — I/O yok, platform kodu yok
+├─ diagnostics/   ağ ölçümü ve öneri — yetki gerektirmez
+├─ dns/           çalışan adres kaynağı bulma ve yönlendirme
+├─ transparent/   yönlendirme + yeniden deneme (Linux)
+├─ nfqueue/       sahte paket motoru (Linux)
+├─ proxy/         yerel SOCKS5 motoru
+├─ cli/           tek komut: trdpi
+└─ gui/           pencere — web motoru yok
+```
+
+Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için `.deb` Ubuntu 22.04 ortamında üretilmelidir.
 
 ## Yol haritası
 
-- [x] Kanonik tip katmanı
-- [x] Teşhis motoru (DNS / TCP / TLS)
-- [x] Yerel proxy motoru + SNI parçalama
-- [x] Şeffaf yönlendirme (Linux, nftables)
-- [x] Yetim kural temizliği ve sinyal ile güvenli kapanış
-- [x] Sahte paket + TTL motoru (NFQUEUE)
+- [x] Ağ ölçümü ve teşhis
 - [x] Adres çözümleme düzeltmesi (kalıcı)
 - [x] Yeniden deneme motoru
-- [x] Tek komut arayüzü
 - [x] Grafik arayüz
 - [x] Çift tıkla kurulum (.deb)
 - [x] Yeni sürüm bildirimi
 - [ ] Açılışta otomatik başlatma
-- [ ] AppImage / rpm
-- [ ] QUIC erişilebilirlik ölçümü
-- [ ] Windows sistem geneli koruma
+- [ ] AppImage ve .rpm
+- [ ] QUIC / UDP kapsamı
 
 ## Lisans
 
