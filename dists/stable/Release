@@ -1,0 +1,26 @@
+Origin: TR-DPI
+Label: TR-DPI
+Suite: stable
+Codename: stable
+Version: 0.1.0
+Architectures: amd64
+Components: main
+Description: Turkiye'de engellenen sitelere erisimi acan uygulama
+Date: Fri, 04 Sep 2026 22:25:37 +0000
+Date: Fri, 04 Sep 2026 22:25:37 +0000
+MD5Sum:
+ 70c9305e1e9094c9cb5c13780a0183bd              255 Release
+ 3a108ed5fd1d0b56490e8bd12961b6aa              955 main/binary-amd64/Packages
+ c528ba280d27d27ed5b1cac219c2e80b              700 main/binary-amd64/Packages.gz
+SHA1:
+ bc13cf6816d0c0617e9928b774938f3f8c2bd7a3              255 Release
+ 46d24ced72c5f3e22c8a5494cb4ba258459e12c0              955 main/binary-amd64/Packages
+ f2407f6a66148c2299c6644292baeac5a3871dae              700 main/binary-amd64/Packages.gz
+SHA256:
+ 976f441127231e4a2775970e1c93846849aeb56c2e0d310c784bc52784f5378f              255 Release
+ e3e2a7a5c9dea08fb54498edf31b715f80f7d47d1376d2557be4948b87c358db              955 main/binary-amd64/Packages
+ 19b21535337a671184a8243241dc02cd30a0ecaf9cdff267a958a0e3162375de              700 main/binary-amd64/Packages.gz
+SHA512:
+ 9bfe03e1ef6fff7c0499ef9e4b91f42eca365b24cc053f853a83d157ef2500b7053dd6cc4b1b8df960c8060ee8de35b7d21fd952e5595607c22e1652ca970508              255 Release
+ e9e35314873ac4343d4df16f963f7db892c31bb2fdeaaef4bdf6899c7ea8d244722b018d60696f81764f53351d953dab790d0bdd29f153dc1effe5f33942d46f              955 main/binary-amd64/Packages
+ 6a01044f19150436d2993cfea5b220cf688015a4b562e9d19953ea0e46fac90ea864d8a4870240d26422a29e083012633f66e6d0e77bef985225e71a7ac2e67b              700 main/binary-amd64/Packages.gz
