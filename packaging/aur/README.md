@@ -2,8 +2,18 @@
 
 Arch ve türevleri (Manjaro, EndeavourOS, CachyOS) için.
 
+AUR'a gönderildikten sonra:
+
 ```bash
 yay -S trdpi-bin
+```
+
+Şimdilik doğrudan bu klasörden kurulabilir:
+
+```bash
+git clone https://github.com/Furkan003/LinuxDpiTurkey.git
+cd LinuxDpiTurkey/packaging/aur
+makepkg -si
 ```
 
 ## Bu klasör ne işe yarar

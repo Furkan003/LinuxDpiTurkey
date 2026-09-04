@@ -23,8 +23,12 @@ Terminal istemiyorsan: [Releases](https://github.com/Furkan003/LinuxDpiTurkey/re
 **Arch / Manjaro / EndeavourOS:**
 
 ```bash
-yay -S trdpi-bin
+git clone https://github.com/Furkan003/LinuxDpiTurkey.git
+cd LinuxDpiTurkey/packaging/aur
+makepkg -si
 ```
+
+*(AUR kaydı Arch tarafında geçici olarak kapalı. Açıldığında `yay -S trdpi-bin` de çalışacak.)*
 
 Kaldırmak için: `sudo apt remove trdpi` (Arch'ta `yay -R trdpi-bin`)
 
