@@ -12,13 +12,15 @@ VPN değil. Uzak sunucu yok, hesap yok, üyelik yok. Trafiğin başka bir yere y
 
 ## Kurulum
 
-`.deb` dosyasına **çift tıkla.** Menüde TR-DPI görünür.
-
-Terminal isteyenler için:
-
 ```bash
-sudo apt install ./trdpi_0.1.0_amd64.deb
+curl -fsSL https://furkan003.github.io/LinuxDpiTurkey/kur.sh | sudo sh
 ```
+
+Depoyu ekler ve kurar. **Güncellemeler bundan sonra sistemin kendi güncelleyicisinden gelir** — Ubuntu "güncelleme var" dediğinde bu da listede olur.
+
+Terminal istemiyorsan: [Releases](https://github.com/Furkan003/LinuxDpiTurkey/releases) sayfasından `.deb` dosyasını indir, **çift tıkla.**
+
+Kaldırmak için: `sudo apt remove trdpi`
 
 ## Kullanım
 
@@ -141,6 +143,7 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Grafik arayüz
 - [x] Çift tıkla kurulum (.deb)
 - [x] Yeni sürüm bildirimi
+- [x] İmzalı apt deposu
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
 - [ ] QUIC / UDP kapsamı
