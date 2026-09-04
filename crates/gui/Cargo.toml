@@ -1,0 +1,16 @@
+[package]
+name = "trdpi-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TR-DPI Adaptive — aç, düğmeye bas, biter."
+
+[[bin]]
+name = "trdpi-arayuz"
+path = "src/main.rs"
+
+[dependencies]
+# Web motoru ve OpenGL yok. Aynı pencereyi OpenGL ile de ölçtük:
+# 115 MB yerine 16 MB, 7.3 MB yerine 1.1 MB dosya.
+fltk = "1.5"

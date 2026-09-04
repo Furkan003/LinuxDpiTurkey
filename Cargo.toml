@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/diagnostics", "crates/proxy", "crates/transparent", "crates/nfqueue", "crates/dns", "crates/cli"]
+members = ["crates/core", "crates/diagnostics", "crates/proxy", "crates/transparent", "crates/nfqueue", "crates/dns", "crates/cli", "crates/gui"]
+
+# Arayüz yalnızca Linux'ta anlamlı ve derlemesi C++ araçları ister.
+# Varsayılan dışında bırakıyoruz ki diğer platformlarda `cargo test`
+# çalışsın; arayüz `cargo build -p trdpi-gui` ile ayrıca derlenir.
+default-members = ["crates/core", "crates/diagnostics", "crates/proxy", "crates/transparent", "crates/nfqueue", "crates/dns", "crates/cli"]
 
 [workspace.package]
 version = "0.1.0"

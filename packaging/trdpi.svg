@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Kalkan: koruma. İçindeki kesik çizgi: engellenen yolun açılması. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f9e6e"/>
+      <stop offset="1" stop-color="#1b6b4a"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M32 5 L54 13 V31 C54 45 44 55 32 59 C20 55 10 45 10 31 V13 Z"
+        fill="url(#g)"/>
+  <path d="M32 5 L54 13 V31 C54 45 44 55 32 59 C20 55 10 45 10 31 V13 Z"
+        fill="none" stroke="#0e3f2c" stroke-width="2"/>
+
+  <!-- Engellenen yol: kesik. Sonra devam ediyor. -->
+  <g stroke="#eafaf2" stroke-width="4" stroke-linecap="round">
+    <line x1="18" y1="32" x2="27" y2="32"/>
+    <line x1="37" y1="32" x2="46" y2="32"/>
+  </g>
+  <!-- Aradaki boşluğu kapatan geçiş. -->
+  <path d="M27 32 Q32 20 37 32" fill="none" stroke="#ffd36b"
+        stroke-width="4" stroke-linecap="round"/>
+</svg>

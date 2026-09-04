@@ -12,13 +12,23 @@ Mevcut araçlar (GoodbyeDPI, zapret, ByeDPI) güçlü motorlar sunuyor ama kulla
 
 Fark şurada: "hangi flag'i deneyeyim" yerine "bağlantım neden bozuk" sorusuna cevap veriyor.
 
-## Kullanım
+## Kurulum
 
-Tek komut. Ölçer, gerekeni düzeltir, korur:
+`.deb` dosyasına **çift tıkla.** Menüde TR-DPI görünür.
+
+Terminal isteyenler için:
 
 ```bash
-sudo trdpi
+sudo apt install ./trdpi_0.1.0_amd64.deb
 ```
+
+## Kullanım
+
+Menüden aç, **BAŞLAT**'a bas. Yönetici parolası bir kez sorulur.
+
+Pencere açık kalmak zorunda değil; kapatınca koruma çalışmaya devam eder.
+
+Terminal isteyenler için:
 
 | Komut | Ne yapar |
 |---|---|
@@ -27,6 +37,33 @@ sudo trdpi
 | `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
 | `sudo trdpi --durdur` | çalışan kopyaları durdur |
 | `sudo trdpi --geri` | yapılan her şeyi geri al |
+
+## Kaynak kullanımı
+
+Sürekli çalışan tek şey motor; pencere yalnızca sen açtığında duruyor.
+
+| | Bellek | Dosya |
+|---|---|---|
+| Motor (sürekli çalışan) | **0.65 MB** | 0.9 MB |
+| Pencere (açıkken) | **16 MB** | 1.2 MB |
+| *Karşılaştırma: NetworkManager* | *18 MB* | |
+| *Karşılaştırma: Thunar* | *42 MB* | |
+
+Arayüz için web motoru ve OpenGL kullanılmıyor. Aynı pencereyi OpenGL ile de yazıp ölçtük: 115 MB ve 7.3 MB dosya. Ölçüm kararı verdi.
+
+## Hangi dağıtımlarda çalışır
+
+Paket, desteklenmek istenen **en eski** dağıtımda derlenir; eski kütüphaneyle derlenen yenide çalışır, tersi çalışmaz. Şu an glibc 2.34 isteniyor:
+
+Ubuntu 22.04+ · Debian 12+ · Mint · Pop!_OS · Zorin · elementary · Fedora 36+ · Arch/Manjaro
+
+Motor tamamen durağan derlendiği için hiçbir sistem kütüphanesine bağlı değil.
+
+## Güncelleme
+
+Program açılınca yeni sürüm var mı diye bakar ve varsa söyler. **Kendiliğinden kurmaz.**
+
+Sebebi: motor yönetici yetkisiyle çalışıyor. Kendiliğinden güncelleme, "internetten inen dosyayı sorgusuz root olarak çalıştır" demek olurdu. Üstelik güncelleme kaynağının kendisi de engellenebilir.
 
 ## Ölçülen sonuç
 
@@ -110,7 +147,8 @@ crates/
 ├─ transparent/   yönlendirme + yeniden deneme (Linux) — nftables
 ├─ nfqueue/       sahte paket + TTL motoru (Linux) — NFQUEUE + ham soket
 ├─ dns/           çalışan adres kaynağı bulma ve yönlendirme
-└─ cli/           tek komut: trdpi
+├─ cli/           tek komut: trdpi
+└─ gui/           pencere — web motoru yok, OpenGL yok
 ```
 
 `crates/core` projenin tek normatif sözleşme kaynağıdır. `TR-DPI-Adaptive-*.md` dosyaları gerekçe ve arka plan belgeleridir; tip tanımı için normatif değildir.
@@ -159,10 +197,12 @@ Testlerin tamamı gerçek ağ backend'i olmadan çalışır; ağ gerektiren tek 
 - [x] Adres çözümleme düzeltmesi (kalıcı)
 - [x] Yeniden deneme motoru
 - [x] Tek komut arayüzü
+- [x] Grafik arayüz
+- [x] Çift tıkla kurulum (.deb)
+- [x] Yeni sürüm bildirimi
 - [ ] Açılışta otomatik başlatma
+- [ ] AppImage / rpm
 - [ ] QUIC erişilebilirlik ölçümü
-- [ ] Grafik arayüz
-- [ ] AppImage / deb / rpm paketleme
 - [ ] Windows sistem geneli koruma
 
 ## Lisans

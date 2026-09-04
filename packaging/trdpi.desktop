@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=TR-DPI
+GenericName=Bağlantı Koruması
+Comment=Engellenen sitelere erişimi açar
+Comment[en]=Restores access to blocked sites
+Exec=trdpi-arayuz
+Icon=trdpi
+Terminal=false
+Categories=Network;Security;
+Keywords=dpi;sansur;engel;discord;roblox;vpn;
+StartupNotify=true
