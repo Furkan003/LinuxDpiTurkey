@@ -119,11 +119,47 @@ pub fn recommend(results: &[DiagnosticResult]) -> Recommendation {
         );
     }
 
+    // 4. TCP sağlamken yalnızca QUIC kapalıysa: engel değil, yavaşlık sebebi.
+    //    Uygulama önce QUIC deniyor, zaman aşımını bekliyor, sonra TCP'ye
+    //    düşüyor. Çözüm engeli aşmak değil, beklemeyi kaldırmak.
+    if fp.quic_blocked {
+        return Recommendation::new(
+            "Bağlantın çalışıyor ama uygulamalar boşuna bekliyor.",
+            "Yeni bağlantı yöntemi (QUIC) yanıt vermiyor. Uygulamalar önce onu              deniyor, zaman aşımını bekliyor ve ancak sonra çalışan yola geçiyor.              Gördüğün yavaşlık bu bekleme.",
+            &[
+                "sudo trdpi — QUIC kapatılır, uygulamalar anında çalışan yola düşer.",
+                "Oyunların gerçek zamanlı bağlantısına dokunulmaz.",
+            ],
+        );
+    }
+
+    // 5. Gerçek zamanlı yol kapalıysa bunu söylemek gerekir: koruma bu yola
+    //    dokunmuyor, dolayısıyla açmıyor da.
+    if realtime_kapali(results) {
+        return Recommendation::new(
+            "Siteler açılıyor ama gerçek zamanlı bağlantı kurulamıyor.",
+            "Oyunların ve sesli görüşmenin kullandığı yol yanıt vermiyor. Bu yol              korumanın kapsamı dışında: dokunmuyoruz, dolayısıyla açmıyoruz da.",
+            &[
+                "Ağında UDP kısıtlaması olabilir; modem/ağ ayarlarını kontrol et.",
+                "Kurumsal ya da mobil bir ağdaysan bu kısıtlama oradan geliyor olabilir.",
+            ],
+        );
+    }
+
     Recommendation::new(
         "Ölçülen hedeflerde engelleme belirtisi yok.",
         "Adres çözümlemesi, bağlantı ve güvenli el sıkışma sorunsuz.",
         &[],
     )
+}
+
+/// Gerçek zamanlı yolun ölçülüp kapalı bulunup bulunmadığı.
+///
+/// Ölçüm hiç yapılmadıysa `false`: bilgi eksikliği kanıt değildir.
+fn realtime_kapali(results: &[DiagnosticResult]) -> bool {
+    results
+        .iter()
+        .any(|r| r.kind == trdpi_core::DiagnosticKind::RealtimeUdp && !r.success)
 }
 
 #[cfg(test)]
@@ -192,6 +228,48 @@ mod tests {
         )]);
         assert!(r.summary.contains("ulaşılamıyor"));
         assert!(!r.steps.is_empty());
+    }
+
+    /// QUIC kapalıyken sahte paket ya da adres önerisi verilmemeli; sorun
+    /// engel değil, uygulamanın boşuna beklemesi.
+    #[test]
+    fn quic_kapaliysa_beklemeyi_kaldirmak_onerilir() {
+        let r = recommend(&[
+            DiagnosticResult::ok(
+                DiagnosticKind::TlsHandshake,
+                "ornek.test",
+                Duration::from_millis(40),
+            ),
+            hata(
+                DiagnosticKind::QuicReachability,
+                Classification::QuicBlocked,
+                None,
+            ),
+        ]);
+        assert!(r.summary.contains("bekliyor"), "{}", r.summary);
+        assert!(!r.steps.iter().any(|s| s.contains("--ttl")));
+    }
+
+    /// Gerçek zamanlı yolun kapalı olduğunu ölçüyorsak söylemeliyiz — ve
+    /// açabiliyormuş gibi yapmamalıyız.
+    #[test]
+    fn gercek_zamanli_yol_kapaliysa_soyleniyor() {
+        let r = recommend(&[
+            DiagnosticResult::ok(
+                DiagnosticKind::TlsHandshake,
+                "ornek.test",
+                Duration::from_millis(40),
+            ),
+            hata(DiagnosticKind::RealtimeUdp, Classification::Degraded, None),
+        ]);
+        assert!(r.summary.contains("gerçek zamanlı"), "{}", r.summary);
+        assert!(r.reason.contains("kapsamı dışında"));
+    }
+
+    /// Ölçüm yapılmadıysa gerçek zamanlı yol hakkında bir şey iddia edilmemeli.
+    #[test]
+    fn olculmemis_gercek_zamanli_yol_kapali_sayilmiyor() {
+        assert!(!realtime_kapali(&[]));
     }
 
     #[test]

@@ -24,6 +24,12 @@ pub struct RedirectRules {
     pub engine_uid: u32,
     /// Yakalanacak hedef portlar.
     pub ports: Vec<u16>,
+    /// QUIC (UDP 443) kapatılsın mı.
+    ///
+    /// Kapatıldığında uygulamalar anında TCP'ye düşer ve koruma kapsamına
+    /// girer. Yalnızca 443 hedeflenir; oyunların gerçek zamanlı trafiği
+    /// yüksek portlarda akar ve dokunulmaz.
+    pub quic_block: bool,
 }
 
 impl RedirectRules {
@@ -34,6 +40,7 @@ impl RedirectRules {
             port,
             engine_uid,
             ports: vec![443],
+            quic_block: false,
         }
     }
 
@@ -98,7 +105,65 @@ impl RedirectRules {
             ]));
         }
 
+        if self.quic_block {
+            cmds.extend(self.quic_commands());
+        }
+
         cmds
+    }
+
+    /// QUIC'i kapatan kurallar.
+    ///
+    /// `reject`, `drop` değil: reddedilen paket uygulamaya **anında** hata
+    /// döner ve TCP'ye o saniye düşer. Sessizce düşürseydik uygulama
+    /// zaman aşımını beklerdi — kullanıcının gördüğü "yavaşlık" tam olarak
+    /// budur.
+    ///
+    /// Yönlendirme zinciri `nat` tipinde olduğu için reddetme yapamaz;
+    /// bu yüzden aynı tabloda ayrı bir `filter` zinciri açılıyor. Tablo
+    /// silindiğinde ikisi birden gider.
+    fn quic_commands(&self) -> Vec<Vec<String>> {
+        let t = &self.table;
+        vec![
+            argv(&[
+                "add",
+                "chain",
+                "inet",
+                t,
+                "quic",
+                "{ type filter hook output priority 0 ; policy accept ; }",
+            ]),
+            argv(&[
+                "add",
+                "rule",
+                "inet",
+                t,
+                "quic",
+                "meta",
+                "skuid",
+                &self.engine_uid.to_string(),
+                "return",
+            ]),
+            argv(&[
+                "add",
+                "rule",
+                "inet",
+                t,
+                "quic",
+                "ip",
+                "daddr",
+                "127.0.0.0/8",
+                "return",
+            ]),
+            argv(&[
+                "add", "rule", "inet", t, "quic", "ip6", "daddr", "::1", "return",
+            ]),
+            // Yalnızca 443. Oyunların gerçek zamanlı trafiği yüksek
+            // portlarda akar ve bu kuralın kapsamına girmez.
+            argv(&[
+                "add", "rule", "inet", t, "quic", "udp", "dport", "443", "reject",
+            ]),
+        ]
     }
 
     /// Kuralları kaldıran `nft` çağrısı.
@@ -218,6 +283,69 @@ mod tests {
         assert_eq!(cmd, vec!["delete", "table", "inet", &r.table]);
         assert!(!cmd.contains(&"flush".to_string()), "asla flush ruleset");
         assert!(!cmd.contains(&"ruleset".to_string()));
+    }
+
+    /// QUIC kapalıyken hiçbir UDP kuralı üretilmemeli.
+    #[test]
+    fn quic_varsayilan_olarak_kapatilmiyor() {
+        let r = rules();
+        assert!(!r.quic_block);
+        let düz: Vec<String> = r.install_commands().iter().map(|c| c.join(" ")).collect();
+        assert!(!düz.iter().any(|c| c.contains("udp")));
+    }
+
+    /// Yalnızca 443 reddedilmeli. Oyunların gerçek zamanlı trafiği yüksek
+    /// portlarda akar; oraya bir kural sızarsa oyun kopar.
+    #[test]
+    fn quic_yalnizca_443u_kapatiyor() {
+        let mut r = rules();
+        r.quic_block = true;
+        let udp: Vec<String> = r
+            .install_commands()
+            .into_iter()
+            .map(|c| c.join(" "))
+            .filter(|c| c.contains("udp"))
+            .collect();
+
+        assert_eq!(udp.len(), 1, "birden fazla UDP kuralı: {udp:?}");
+        assert!(udp[0].contains("dport 443"));
+        assert!(
+            udp[0].contains("reject"),
+            "sessiz düşürme uygulamayı bekletir"
+        );
+    }
+
+    /// Reddetme kuralı, muafiyetlerden **sonra** gelmeli.
+    #[test]
+    fn quic_muafiyetleri_once_geliyor() {
+        let mut r = rules();
+        r.quic_block = true;
+        let cmds = r.install_commands();
+
+        let zincir = cmds
+            .iter()
+            .position(|c| c.contains(&"quic".to_string()))
+            .expect("quic zinciri yok");
+        let skuid = cmds
+            .iter()
+            .rposition(|c| c.contains(&"skuid".to_string()))
+            .unwrap();
+        let reddet = cmds
+            .iter()
+            .position(|c| c.contains(&"reject".to_string()))
+            .unwrap();
+
+        assert!(zincir < skuid && skuid < reddet);
+    }
+
+    /// QUIC zinciri de aynı tabloda olmalı; tablo silinince ikisi de gitsin.
+    #[test]
+    fn quic_zinciri_ayni_tabloda() {
+        let mut r = rules();
+        r.quic_block = true;
+        for cmd in r.install_commands() {
+            assert!(cmd.contains(&r.table), "yabancı tabloya kural: {cmd:?}");
+        }
     }
 
     #[test]

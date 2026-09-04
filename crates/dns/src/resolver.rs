@@ -168,8 +168,13 @@ mod exec {
         std::fs::write(path, dropin_contents(upstream)).map_err(|e| match e.kind() {
             std::io::ErrorKind::PermissionDenied => ResolverError::Denied,
             _ => ResolverError::Failed(e.to_string()),
-        })?;
-        reload()
+        })
+        // Servisi yeniden başlatmıyoruz. Çalışan ayar `resolvectl` ile zaten
+        // anında uygulandı; bu dosya yalnızca **bir sonraki açılış** için.
+        //
+        // Yeniden başlatmak iki soruna yol açıyordu: birkaç saniyelik ad
+        // çözümleme kesintisi (o anda başlayan büyük indirmeler çöküyordu) ve
+        // durdurmanın gereksiz uzaması.
     }
 
     /// Kalıcı ayar dosyasını siler ve servisi yeniden yükler.
@@ -178,25 +183,13 @@ mod exec {
     pub fn remove_persistent() -> Result<(), ResolverError> {
         use super::DROPIN_PATH;
 
+        // Yeniden başlatma yok; çalışan ayar ayrıca `resolvectl` ile geri
+        // alınıyor, bu dosya yalnızca sonraki açılışı ilgilendiriyor.
         match std::fs::remove_file(DROPIN_PATH) {
-            Ok(()) => reload(),
+            Ok(()) => Ok(()),
+            // Dosya zaten yoksa iş bitmiş demektir.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(ResolverError::Failed(e.to_string())),
-        }
-    }
-
-    /// systemd-resolved'i yeniden başlatır.
-    fn reload() -> Result<(), ResolverError> {
-        let out = Command::new("systemctl")
-            .args(["restart", "systemd-resolved"])
-            .output()
-            .map_err(|e| ResolverError::Failed(e.to_string()))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(ResolverError::Failed(
-                String::from_utf8_lossy(&out.stderr).trim().to_owned(),
-            ))
         }
     }
 

@@ -4,8 +4,8 @@
 //! gerektiren işler `pkexec` ile çalıştırılır; masaüstü kendi parola
 //! penceresini gösterir, kullanıcı terminal görmez.
 //!
-//! Motorun çalışıp çalışmadığını anlamak yetki istemez: `/proc` altındaki
-//! süreç adlarını okumak herkese açıktır.
+//! Motorun çalışıp çalışmadığını anlamak yetki istemez: kimlik dosyasını ve
+//! `/proc` altındaki süreç adlarını okumak herkese açıktır.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -35,9 +35,42 @@ pub fn engine_path() -> PathBuf {
 /// Motorun adı — `/proc/<pid>/comm` bu değeri taşır.
 const PROCESS_NAME: &str = "trdpi";
 
-/// Motorun şu an çalışıp çalışmadığı.
+/// Koruma kurulduğunda motorun kimliğini yazdığı dosya.
+const PIDFILE: &str = "/run/trdpi.pid";
+
+/// `/run` yazılamayan sistemlerde kullanılan yer.
+const PIDFILE_FALLBACK: &str = "/var/lib/trdpi/pid";
+
+/// Kimlik dosyasındaki değerin yaşayan bir motora ait olup olmadığı.
+///
+/// İki kontrol de gerekli: `kill -9` ile ölen bir motor dosyayı arkasında
+/// bırakır ve kimliği bu arada başka bir programa verilmiş olabilir.
+#[cfg(target_os = "linux")]
+fn pidfile_running() -> Option<bool> {
+    let icerik = [PIDFILE, PIDFILE_FALLBACK]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())?;
+    let Some(pid) = icerik.trim().parse::<u32>().ok().filter(|p| *p > 1) else {
+        return Some(false);
+    };
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    Some(comm.trim() == PROCESS_NAME)
+}
+
+/// Korumanın şu an çalışıp çalışmadığı.
+///
+/// Kimlik dosyası varsa **ona** bakılır. Süreç adına bakmak yetmez: durdurma
+/// komutunun kendisi de `trdpi` adını taşır, o yüzden ada bakan bir kontrol
+/// durdurma sürerken "hâlâ çalışıyor" der ve kullanıcı durduramadığını sanır.
+///
+/// Dosya hiç yoksa (eski sürüm, yazılamayan dizin) ada bakan eski yönteme
+/// düşülür — yanlış "çalışıyor" demek, yanlış "durdu" demekten iyidir.
 #[cfg(target_os = "linux")]
 pub fn is_running() -> bool {
+    if let Some(cevap) = pidfile_running() {
+        return cevap;
+    }
+
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
     };

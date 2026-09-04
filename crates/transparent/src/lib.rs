@@ -14,8 +14,10 @@
 //!
 //! ## Kapsam
 //!
-//! TCP yakalanır. UDP — dolayısıyla QUIC ve oyunların gerçek zamanlı trafiği —
-//! bu mekanizmayla taşınmaz.
+//! TCP yakalanır ve korunur. UDP taşınmaz — ama profil isterse QUIC
+//! (UDP 443) reddedilir, böylece uygulamalar korunan TCP yoluna düşer.
+//! Yüksek portlardaki UDP'ye (oyunların gerçek zamanlı trafiği) hiç
+//! dokunulmaz.
 
 // Yalnızca iki syscall sarmalayıcısı unsafe kullanır; başka her yerde yasak.
 #![deny(unsafe_code)]
@@ -34,7 +36,7 @@ use std::thread;
 use std::time::Duration;
 
 use trdpi_core::backend::{Backend, BackendError, EngineId, ProbeContext, ProbeResult, Snapshot};
-use trdpi_core::profile::{FakeTrafficMode, FragmentationMode, Profile, TtlMode};
+use trdpi_core::profile::{FakeTrafficMode, FragmentationMode, Profile, QuicMode, TtlMode};
 use trdpi_core::score::{HealthReport, ScoreInputs};
 use trdpi_core::{Capabilities, Classification, Mechanism, SessionId};
 use trdpi_proxy::{server::write_fragments, split};
@@ -127,6 +129,9 @@ impl TransparentEngine {
     pub fn supports_profile(profile: &Profile) -> bool {
         profile.strategy.fake_traffic == FakeTrafficMode::Off
             && profile.strategy.ttl == TtlMode::Off
+            // QUIC üzerinde desync paket düzeyinde iş; kullanıcı alanında
+            // yapılamaz. Geçirmek ve kapatmak yapılabilir.
+            && profile.protocols.quic != QuicMode::Desync
     }
 
     /// Sayaçların anlık görüntüsü.
@@ -172,8 +177,9 @@ impl Backend for TransparentEngine {
             mechanisms: vec![Mechanism::TransparentProxy],
             privilege_escalation: true,
             ipv6: false,
-            // UDP yakalanmadığı için QUIC bu mekanizmadan geçmez.
-            quic_handling: false,
+            // QUIC taşınmaz ama kapatılabilir; profil öyle diyorsa
+            // uygulamalar korunan TCP yoluna düşer.
+            quic_handling: true,
             dns_control: false,
             system_label: None,
         }
@@ -242,6 +248,7 @@ impl Backend for TransparentEngine {
         let mut rules =
             RedirectRules::new(&snapshot.session, listener_addr.port(), Self::engine_uid());
         rules.ports = self.config.capture_ports.clone();
+        rules.quic_block = profile.protocols.quic == QuicMode::Block;
 
         install_rules(&rules)?;
         // Kural kurulduğu anda temizlik listesine girer; bir sonraki adım
@@ -565,7 +572,7 @@ mod tests {
         assert!(e.mechanism().is_system_wide(), "sistem geneli olmalı");
         assert!(e.mechanism().requires_privilege());
         assert!(e.mechanism().mutates_system(), "snapshot zorunlu");
-        assert!(!e.capabilities().quic_handling, "UDP yakalanmıyor");
+        assert!(e.capabilities().quic_handling, "QUIC kapatılabiliyor");
     }
 
     #[test]
@@ -581,6 +588,12 @@ mod tests {
 
         p.strategy.fake_traffic = FakeTrafficMode::Off;
         assert!(TransparentEngine::supports_profile(&p));
+
+        // QUIC'i kapatmak yapılabilir; QUIC üzerinde desync yapılamaz.
+        p.protocols.quic = QuicMode::Block;
+        assert!(TransparentEngine::supports_profile(&p));
+        p.protocols.quic = QuicMode::Desync;
+        assert!(!TransparentEngine::supports_profile(&p));
     }
 
     #[test]

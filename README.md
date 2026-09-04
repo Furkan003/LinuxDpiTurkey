@@ -47,6 +47,7 @@ Terminal kullanmak isteyenler için:
 | `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
 | `sudo trdpi --durdur` | çalışan kopyaları durdur |
 | `sudo trdpi --geri` | yapılan her değişikliği geri al |
+| `sudo trdpi --quic-gecir` | QUIC'i kapatma (aşağıya bak) |
 
 ## Gerçekten işe yarıyor mu
 
@@ -59,6 +60,19 @@ Gerçek bir Türkiye hattında ölçüldü (Ubuntu 24.04, her hedefe 15 deneme).
 | **Tam koruma** | **14/15** | **15/15** |
 | Yalnızca adres düzeltmesi *(kontrol)* | 7/15 | 8/15 |
 
+## Hızı düşürüyor mu
+
+Hayır. Koruma açıkken ve kapalıyken aynı hattan ölçüldü:
+
+| | Koruma kapalı | Koruma açık |
+|---|---|---|
+| 10 MB indirme | 8.20 MB/s | 8.20 MB/s |
+| Sayfa açılışı (TCP 443) | 0.171 s | 0.172 s |
+| Gerçek zamanlı yol (STUN) | 153 ms | 147 ms |
+| Durdurma | — | **0.10 s** |
+
+Trafik yerel bir motordan geçiyor ama motor veriyi kopyalamıyor; çekirdek iki bağlantıyı doğrudan birbirine bağlıyor.
+
 ## Nasıl çalışıyor
 
 Ölçtüğümüz hatta engel **iki katmanlıydı**; uygulama ikisini de çözüyor.
@@ -67,7 +81,13 @@ Gerçek bir Türkiye hattında ölçüldü (Ubuntu 24.04, her hedefe 15 deneme).
 
 Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor ve ayarı yeniden başlatmaya dayanıklı biçimde yazıyor.
 
-**2. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
+**2. Uygulamaların boşuna beklemesi.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni bağlantı yöntemi. Bu yol engelliyse yanıt hiç gelmiyor ve uygulama zaman aşımını bekleyip ancak sonra TCP'ye düşüyor. Bekleme boyunca ekranda hiçbir şey olmuyor.
+
+Uygulama QUIC'i kapatıyor: UDP 443 **reddediliyor**, sessizce düşürülmüyor. Fark önemli — reddedilen istek uygulamaya anında hata döner ve o saniye korunan TCP yoluna geçer; düşürülen istek zaman aşımı boyunca bekletirdi.
+
+Yalnızca 443 kapatılıyor. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile açık bırakabilir.
+
+**3. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
 
 Yeniden deneme yalnızca tarayıcına ya da uygulamana tek bayt bile ulaşmadan önce yapılıyor. Yanıt gelmeye başladıktan sonra yeniden denemek veriyi bozardı.
 
@@ -98,9 +118,21 @@ Ubuntu 22.04+ · Debian 12+ · Linux Mint · Pop!_OS · Zorin · elementary · F
 
 Paket, desteklenmek istenen **en eski** dağıtımda derleniyor: eski kütüphaneyle derlenen yenide çalışır, tersi çalışmaz. Motor tamamen durağan derlendiği için hiçbir sistem kütüphanesine bağlı değil.
 
+## Gerçek zamanlı bağlantı (oyun, sesli görüşme)
+
+Oyunların ve sesli görüşmenin trafiği yüksek portlarda UDP ile akar. Uygulama bu yola **dokunmuyor** — dolayısıyla ne bozuyor ne de açıyor.
+
+Bunu iddia etmek yerine ölçüyoruz: her teşhis turunda gerçek zamanlı yolun açık olup olmadığı, oyunların bağlanırken kullandığı protokolün (STUN) kendisiyle sınanıyor ve sonuç ekranda yazıyor:
+
+```
+QUIC (UDP 443): kapalı · Gerçek zamanlı yol (oyun, sesli görüşme): açık
+```
+
+Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kapalıyken 153 ms. Fark yok.
+
 ## Ne yapmaz
 
-**UDP trafiğini kapsamaz.** Oyunların gerçek zamanlı bağlantısı bu yöntemden geçmez. Roblox'a giriş yapmak çalışır; oyun içi bağlantı farklı bir yol kullanır.
+**Gerçek zamanlı trafikteki engeli açmaz.** Yukarıdaki ölçüm "kapalı" diyorsa engel UDP tarafında demektir; bunu aşmak paket düzeyinde ayrı bir iş ve henüz yapılmıyor.
 
 **Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
 
@@ -125,7 +157,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 223 test
+cargo test                                   # 225 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -155,9 +187,11 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Yeni sürüm bildirimi
 - [x] İmzalı apt deposu
 - [x] AUR paketi (Arch)
+- [x] QUIC (UDP 443) kapsamı
+- [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
-- [ ] QUIC / UDP kapsamı
+- [ ] Gerçek zamanlı trafikte engel aşma
 
 ## Lisans
 

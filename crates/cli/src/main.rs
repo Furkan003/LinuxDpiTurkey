@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use trdpi_core::backend::Backend;
-use trdpi_core::profile::{FragmentationMode, Profile};
-use trdpi_core::{Mechanism, NetworkFingerprint, SessionId};
+use trdpi_core::profile::{FragmentationMode, Profile, QuicMode};
+use trdpi_core::{Mechanism, NetworkFingerprint, RiskLevel, SessionId};
 use trdpi_diagnostics::recommend::recommend;
-use trdpi_diagnostics::{probe_target, Target, Timeouts};
+use trdpi_diagnostics::{probe_target, udp, Target, Timeouts};
 use trdpi_dns::resolver::{self, ResolverConfig, ResolverManager};
 use trdpi_dns::{upstream, wire, DEFAULT_CANARY};
 use trdpi_transparent::{TransparentConfig, TransparentEngine};
@@ -41,6 +41,12 @@ fn main() {
         return geri_al();
     }
     let sadece_olc = args.iter().any(|a| a == "--olc");
+    // QUIC koruma kapsamına girmiyor: paket düzeyinde iş ve kullanıcı
+    // alanından yapılamıyor. Açık bırakırsak uygulama önce QUIC deniyor,
+    // engelleniyor, zaman aşımını bekliyor ve ancak sonra TCP'ye düşüyor —
+    // kullanıcının gördüğü "yavaşlık" ve Discord'un açılmaması bu.
+    // Reddedip anında TCP'ye düşürüyoruz. İstemeyen kapatabilsin.
+    let quic_gecir = args.iter().any(|a| a == "--quic-gecir");
 
     // Süre sınırı: verilen saniyeden sonra kendi kendine geri alır.
     // Bir şeyler ters giderse sistem sonsuza kadar değişmiş kalmaz.
@@ -68,6 +74,7 @@ fn main() {
 
     println!();
     println!("{}", oneri.summary);
+    println!("{}", udp_ozeti(&sonuclar));
 
     if sadece_olc {
         println!();
@@ -100,6 +107,15 @@ fn main() {
     profile.name = "Yeniden deneme".into();
     profile.supported_mechanisms = vec![Mechanism::TransparentProxy];
     profile.strategy.fragmentation = FragmentationMode::Off;
+    if !quic_gecir {
+        profile.protocols.quic = QuicMode::Block;
+        // QUIC'i kapatmak kullanıcının görebileceği bir davranış değişikliği;
+        // profil bunu düşük riskli diye etiketleyemez.
+        profile.risk = RiskLevel::High;
+    }
+    if let Err(e) = profile.validate() {
+        return bitir(&format!("profil geçersiz: {e}"));
+    }
 
     let engine = TransparentEngine::new(TransparentConfig::default());
     let mut snapshot = match engine.prepare(SessionId::new()) {
@@ -110,11 +126,19 @@ fn main() {
         return bitir(&e.user_message());
     }
 
+    // Koruma gerçekten kurulduktan sonra: arayüz buna bakıyor.
+    instance::write_pidfile();
+
     println!();
     println!("Koruma aktif. Tüm uygulamalar kapsam içinde.");
     println!("Discord, Sober ve diğerlerinde ayar yapman gerekmiyor.");
     println!();
-    println!("Kapsam dışı: UDP trafiği (oyunların gerçek zamanlı bağlantısı).");
+    if quic_gecir {
+        println!("QUIC açık bırakıldı (--quic-gecir).");
+    } else {
+        println!("QUIC (UDP 443) kapatıldı; uygulamalar korunan TCP yolunu kullanıyor.");
+    }
+    println!("Oyunların gerçek zamanlı bağlantısına dokunulmuyor.");
     match sure {
         Some(s) => println!("{} saniye sonra kendiliğinden geri alınacak.", s.as_secs()),
         None => println!("Durdurmak için Ctrl+C."),
@@ -153,6 +177,7 @@ fn main() {
     }
 
     println!("Geri alınıyor...");
+    instance::clear_pidfile();
     match engine.rollback(snapshot) {
         Ok(()) => println!("Temiz."),
         Err(e) => {
@@ -186,6 +211,11 @@ fn olc() -> Vec<trdpi_core::DiagnosticResult> {
     for h in &hedefler {
         hepsi.extend(probe_target(h, &t));
     }
+
+    // UDP iki ayrı soru: QUIC (443) ve gerçek zamanlı yol (yüksek portlar).
+    // İkisi bağımsız — biri kapalıyken diğeri açık olabilir.
+    hepsi.push(udp::quic_reachable("example.com", Duration::from_secs(3)));
+    hepsi.push(udp::realtime_reachable(Duration::from_secs(3)));
     hepsi
 }
 
@@ -237,6 +267,9 @@ fn dns_duzelt() -> Result<String, String> {
 
 /// Yapılan her değişikliği geri alır.
 fn geri_al() {
+    // Kimlik dosyası: sahibi ölmüşse kalmış olabilir.
+    temiz_kimlik_dosyasi();
+
     // Yönlendirme kuralları: kalıntı varsa temizle.
     let temizlenen = trdpi_transparent::cleanup::remove_orphans().unwrap_or_default();
     if !temizlenen.is_empty() {
@@ -265,6 +298,41 @@ fn geri_al() {
         }
     }
     println!("Temiz.");
+}
+
+/// UDP ölçümlerinin tek satırlık özeti.
+///
+/// İki yol ayrı ayrı söyleniyor: kullanıcı "oyunum çalışacak mı" sorusunun
+/// cevabını QUIC'ten değil buradan alıyor.
+fn udp_ozeti(sonuclar: &[trdpi_core::DiagnosticResult]) -> String {
+    use trdpi_core::DiagnosticKind;
+
+    let durum = |kind: DiagnosticKind| {
+        sonuclar
+            .iter()
+            .find(|r| r.kind == kind)
+            .map(|r| if r.success { "açık" } else { "kapalı" })
+            .unwrap_or("ölçülmedi")
+    };
+
+    format!(
+        "QUIC (UDP 443): {} · Gerçek zamanlı yol (oyun, sesli görüşme): {}",
+        durum(DiagnosticKind::QuicReachability),
+        durum(DiagnosticKind::RealtimeUdp),
+    )
+}
+
+/// Sahibi ölmüş kimlik dosyasını siler.
+///
+/// `kill -9` ile ölen bir kopya dosyayı arkasında bırakır; temizlenmezse
+/// arayüz sonsuza kadar "çalışıyor" gösterir.
+fn temiz_kimlik_dosyasi() {
+    for yol in [
+        trdpi_core::paths::PIDFILE,
+        trdpi_core::paths::PIDFILE_FALLBACK,
+    ] {
+        let _ = std::fs::remove_file(yol);
+    }
 }
 
 /// Sistemin çözümleyicisinin sansür adresi döndürüp döndürmediği.
@@ -320,6 +388,8 @@ fn yardim() {
     println!("  sudo trdpi --sure <sn>  belirtilen süre sonunda kendiliğinden geri al");
     println!("  sudo trdpi --durdur     çalışan kopyaları durdur");
     println!("  sudo trdpi --geri yapılan her şeyi geri al");
+    println!("  sudo trdpi --quic-gecir  QUIC'i kapatma (bazı siteler hızlanır,");
+    println!("                           bazı uygulamalar açılmayabilir)");
     println!("  trdpi --yardim    bu metin");
 }
 

@@ -10,7 +10,7 @@
 # yani Arch'ta da calisiyor. Yan fayda: kullanici derleme beklemiyor.
 pkgname=trdpi-bin
 _pkgname=trdpi
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Turkiye'de engellenen sitelere erisimi acan uygulama"
 arch=('x86_64')

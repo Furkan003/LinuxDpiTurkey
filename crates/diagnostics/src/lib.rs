@@ -21,6 +21,7 @@ pub mod dns;
 pub mod recommend;
 pub mod tcp;
 pub mod tls;
+pub mod udp;
 
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;

@@ -24,6 +24,11 @@ pub enum DiagnosticKind {
     HttpFetch,
     /// QUIC/UDP 443 erişilebilir mi.
     QuicReachability,
+    /// Gerçek zamanlı UDP yolu (oyun, sesli görüşme) açık mı.
+    ///
+    /// Yüksek portlarda akar ve QUIC'ten ayrı ölçülür: 443 kapalıyken bu
+    /// yol açık olabilir, tersi de mümkündür.
+    RealtimeUdp,
 }
 
 /// Tek bir ölçümün sonucu.

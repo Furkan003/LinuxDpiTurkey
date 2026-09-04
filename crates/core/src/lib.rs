@@ -33,6 +33,7 @@ pub mod backend;
 pub mod capability;
 pub mod classify;
 pub mod diagnostics;
+pub mod paths;
 pub mod profile;
 pub mod score;
 pub mod session;
