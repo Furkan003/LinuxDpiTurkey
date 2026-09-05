@@ -24,13 +24,14 @@
 #![warn(missing_docs)]
 
 pub mod cleanup;
+pub mod marked;
 pub mod nft;
 pub mod origdst;
 pub mod retry;
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -56,6 +57,11 @@ pub struct TransparentConfig {
     pub connect_timeout: Duration,
     /// Kesilen bağlantıyı yeniden deneme ayarları.
     pub retry: retry::RetryPolicy,
+    /// Adres sorularının çevrileceği sunucu.
+    ///
+    /// Yalnızca sistemin kendi aracıyla çözümleyiciyi değiştiremediğimizde
+    /// doldurulur; o durumda soruları kuralla çeviriyoruz.
+    pub dns_upstream: Option<SocketAddr>,
 }
 
 impl Default for TransparentConfig {
@@ -75,6 +81,7 @@ impl Default for TransparentConfig {
             // dört deneme, süre başına dört kat uzuyor.
             connect_timeout: Duration::from_secs(2),
             retry: retry::RetryPolicy::default(),
+            dns_upstream: None,
         }
     }
 }
@@ -139,10 +146,38 @@ struct Running {
     worker6: Option<thread::JoinHandle<()>>,
 }
 
+/// Parçalama kipini atomik bir sayıya sığdırır.
+///
+/// Kip çalışma anında değişebilmeli: bir operatörde işe yaramayan teknik
+/// başka birinde çalışabiliyor ve bunu ancak deneyerek anlıyoruz. Kilit
+/// yerine atomik kullanıyoruz; her bağlantıda okunuyor.
+fn kip_kodla(m: FragmentationMode) -> u32 {
+    match m {
+        FragmentationMode::Off => 0,
+        FragmentationMode::SniAware => 1,
+        FragmentationMode::Fixed { position } => 0x0001_0000 | position as u32,
+    }
+}
+
+/// [`kip_kodla`]'nın tersi.
+fn kip_coz(v: u32) -> FragmentationMode {
+    if v & 0x0001_0000 != 0 {
+        return FragmentationMode::Fixed {
+            position: (v & 0xFFFF) as u16,
+        };
+    }
+    if v == 1 {
+        return FragmentationMode::SniAware;
+    }
+    FragmentationMode::Off
+}
+
 /// Sistem geneli koruma motoru.
 #[derive(Debug, Default)]
 pub struct TransparentEngine {
     config: TransparentConfig,
+    /// Çalışma anında değişebilen parçalama kipi.
+    fragmentation: Arc<AtomicU32>,
     counters: Arc<Counters>,
     running: Mutex<Option<Running>>,
 }
@@ -152,6 +187,7 @@ impl TransparentEngine {
     pub fn new(config: TransparentConfig) -> Self {
         Self {
             config,
+            fragmentation: Arc::new(AtomicU32::new(0)),
             counters: Arc::new(Counters::default()),
             running: Mutex::new(None),
         }
@@ -167,6 +203,20 @@ impl TransparentEngine {
             // QUIC üzerinde desync paket düzeyinde iş; kullanıcı alanında
             // yapılamaz. Geçirmek ve kapatmak yapılabilir.
             && profile.protocols.quic != QuicMode::Desync
+    }
+
+    /// Parçalama kipini çalışma anında değiştirir.
+    ///
+    /// Bir teknik bu hatta işe yaramıyorsa motoru durdurup yeniden kurmak
+    /// yerine kipi değiştiriyoruz; açık bağlantılar etkilenmiyor, sonraki
+    /// bağlantılar yeni kiple kuruluyor.
+    pub fn set_fragmentation(&self, mode: FragmentationMode) {
+        self.fragmentation.store(kip_kodla(mode), Ordering::Relaxed);
+    }
+
+    /// O anda kullanılan parçalama kipi.
+    pub fn fragmentation(&self) -> FragmentationMode {
+        kip_coz(self.fragmentation.load(Ordering::Relaxed))
     }
 
     /// Sayaçların anlık görüntüsü.
@@ -290,6 +340,13 @@ impl Backend for TransparentEngine {
             RedirectRules::new(&snapshot.session, listener_addr.port(), Self::engine_uid());
         rules.ports = self.config.capture_ports.clone();
         rules.quic_block = profile.protocols.quic == QuicMode::Block;
+        // İşaret kullanılabiliyorsa yalnızca kendi soketlerimizi muaf
+        // tutuyoruz; böylece root olarak çalışan uygulamalar da korunuyor.
+        // Kullanılamıyorsa (kısıtlı kapsayıcı) eski davranışa dönülüyor.
+        rules.exempt_mark = marked::mark_supported().then_some(marked::CONNECT_MARK);
+        rules.dns_upstream = self.config.dns_upstream;
+        self.fragmentation
+            .store(kip_kodla(profile.strategy.fragmentation), Ordering::Relaxed);
         // IPv6'yı ancak taşıyabildiğimizi **sınayıp** doğruladıktan sonra
         // açıyoruz; sınama başarısızsa IPv6 korumasız ama çalışır kalır.
         rules.ipv6 = match (&listener6, listener6_addr) {
@@ -306,7 +363,7 @@ impl Backend for TransparentEngine {
         let worker = {
             let shutdown = Arc::clone(&shutdown);
             let counters = Arc::clone(&self.counters);
-            let fragmentation = profile.strategy.fragmentation;
+            let fragmentation = Arc::clone(&self.fragmentation);
             let config = self.config.clone();
             thread::spawn(move || {
                 for incoming in listener.incoming() {
@@ -318,9 +375,12 @@ impl Backend for TransparentEngine {
                     let counters = Arc::clone(&counters);
                     let config = config.clone();
                     counters.accepted.fetch_add(1, Ordering::Relaxed);
+                    // Kip her bağlantıda yeniden okunuyor: yükseltme anında
+                    // devreye girsin, motoru yeniden kurmak gerekmesin.
+                    let kip = kip_coz(fragmentation.load(Ordering::Relaxed));
 
                     thread::spawn(move || {
-                        if handle(client, listener_addr, fragmentation, &config, &counters).is_err()
+                        if handle(client, listener_addr, kip, &config, &counters).is_err()
                         {
                             counters.failed.fetch_add(1, Ordering::Relaxed);
                         }
@@ -335,7 +395,7 @@ impl Backend for TransparentEngine {
             (Some(l6), true) => {
                 let shutdown = Arc::clone(&shutdown);
                 let counters = Arc::clone(&self.counters);
-                let fragmentation = profile.strategy.fragmentation;
+                let fragmentation = Arc::clone(&self.fragmentation);
                 let config = self.config.clone();
                 let adres6 = listener6_addr.unwrap_or(listener_addr);
                 Some(thread::spawn(move || {
@@ -347,8 +407,9 @@ impl Backend for TransparentEngine {
                         let counters = Arc::clone(&counters);
                         let config = config.clone();
                         counters.accepted.fetch_add(1, Ordering::Relaxed);
+                        let kip = kip_coz(fragmentation.load(Ordering::Relaxed));
                         thread::spawn(move || {
-                            if handle(client, adres6, fragmentation, &config, &counters).is_err() {
+                            if handle(client, adres6, kip, &config, &counters).is_err() {
                                 counters.failed.fetch_add(1, Ordering::Relaxed);
                             }
                         });
@@ -587,7 +648,7 @@ fn connect_with_retry(
     let mut son_hata = None;
 
     for attempt in 0..policy.attempts {
-        let mut upstream = match TcpStream::connect_timeout(&target, config.connect_timeout) {
+        let mut upstream = match marked::connect_timeout(target, config.connect_timeout) {
             Ok(s) => s,
             Err(e) => {
                 son_hata = Some(e);
@@ -916,5 +977,40 @@ mod tests {
         let r = e.probe(&ctx).unwrap();
         assert!(!r.usable);
         assert!(r.reason.is_some());
+    }
+}
+
+#[cfg(test)]
+mod kip_testleri {
+    use super::*;
+
+    #[test]
+    fn kipler_gidip_geliyor() {
+        for m in [
+            FragmentationMode::Off,
+            FragmentationMode::SniAware,
+            FragmentationMode::Fixed { position: 1 },
+            FragmentationMode::Fixed { position: 2 },
+            FragmentationMode::Fixed { position: 65535 },
+        ] {
+            assert_eq!(kip_coz(kip_kodla(m)), m, "{m:?} kodlanip cozulemedi");
+        }
+    }
+
+    #[test]
+    fn bilinmeyen_deger_kapali_sayiliyor() {
+        // Bozuk bir değer yüzünden trafiğe beklenmedik bir şey yapmayalım.
+        assert_eq!(kip_coz(0), FragmentationMode::Off);
+        assert_eq!(kip_coz(9999), FragmentationMode::Off);
+    }
+
+    #[test]
+    fn motor_kipi_calisma_aninda_degistirebiliyor() {
+        let e = TransparentEngine::new(TransparentConfig::default());
+        assert_eq!(e.fragmentation(), FragmentationMode::Off);
+        e.set_fragmentation(FragmentationMode::SniAware);
+        assert_eq!(e.fragmentation(), FragmentationMode::SniAware);
+        e.set_fragmentation(FragmentationMode::Fixed { position: 3 });
+        assert_eq!(e.fragmentation(), FragmentationMode::Fixed { position: 3 });
     }
 }

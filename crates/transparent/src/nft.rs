@@ -8,6 +8,8 @@
 //! Komut üretimi saf bir fonksiyondur ve her platformda test edilir; yalnızca
 //! çalıştırma Linux'a özeldir.
 
+use std::net::SocketAddr;
+
 use trdpi_core::SessionId;
 
 /// Yönlendirme kurallarının ayarları.
@@ -22,6 +24,13 @@ pub struct RedirectRules {
     /// Bu kullanıcının kendi trafiği yönlendirilmez; aksi halde motorun hedefe
     /// açtığı bağlantı kendine geri döner ve sonsuz döngü oluşur.
     pub engine_uid: u32,
+    /// Muafiyet için kullanılacak paket işareti.
+    ///
+    /// `Some` ise yalnızca **bizim açtığımız soketler** muaf tutulur; root
+    /// olarak çalışan diğer uygulamalar kapsama girer. `None` ise eski
+    /// davranışa dönülür ve motorun kullanıcı kimliği muaf tutulur — bu,
+    /// root'un tüm trafiğini kapsam dışı bırakır.
+    pub exempt_mark: Option<u32>,
     /// Yakalanacak hedef portlar.
     pub ports: Vec<u16>,
     /// QUIC (UDP 443) kapatılsın mı.
@@ -30,6 +39,13 @@ pub struct RedirectRules {
     /// girer. Yalnızca 443 hedeflenir; oyunların gerçek zamanlı trafiği
     /// yüksek portlarda akar ve dokunulmaz.
     pub quic_block: bool,
+    /// Adres sorularının çevrileceği sunucu.
+    ///
+    /// `systemd-resolved` olmayan dağıtımlarda çözümleyiciyi sistemin
+    /// aracıyla değiştiremiyoruz. Onun yerine giden adres sorularını doğrudan
+    /// çalışan sunucuya çeviriyoruz: hangi çözümleyici ayarlı olursa olsun,
+    /// hatta uygulama kendi sunucusunu kullanıyor olsa bile işe yarıyor.
+    pub dns_upstream: Option<SocketAddr>,
     /// IPv6 trafiği de yönlendirilsin mi.
     ///
     /// Varsayılan kapalı. Motor açılışta çekirdeğin özgün hedefi IPv6 için
@@ -46,6 +62,8 @@ impl RedirectRules {
             table: session.object_name("redirect"),
             port,
             engine_uid,
+            exempt_mark: None,
+            dns_upstream: None,
             ipv6: false,
             ports: vec![443],
             quic_block: false,
@@ -69,17 +87,7 @@ impl RedirectRules {
                 "{ type nat hook output priority -100 ; policy accept ; }",
             ]),
             // Motorun kendi trafiği asla yönlendirilmez — döngü koruması.
-            argv(&[
-                "add",
-                "rule",
-                "inet",
-                t,
-                "output",
-                "meta",
-                "skuid",
-                &self.engine_uid.to_string(),
-                "return",
-            ]),
+            self.muafiyet_kurali(t, "output"),
             // Yerel trafiğe dokunma.
             argv(&[
                 "add",
@@ -101,6 +109,16 @@ impl RedirectRules {
         // yazılırsa her ikisini de yakalar; IPv6'yı ancak taşıyabildiğimizi
         // sınayarak doğruladığımızda açıyoruz. Yakalayıp taşıyamadığımız
         // trafik tamamen kesilirdi — korumasız bırakmak yeğdir.
+        // Adres soruları **her şeyden önce** çevriliyor. Yerel muafiyetten
+        // sonra gelirse, çözümleyicisi 127.0.0.53 gibi yerel bir adreste
+        // olan sistemlerde kural hiç devreye girmez. `nat` ifadesi
+        // sonlandırıcı olduğu için diğer kuralları etkilemiyor.
+        let dns = self.dns_commands();
+        let bas = if dns.is_empty() { 0 } else { 2 }; // tablo + zincir
+        for (i, k) in dns.into_iter().enumerate() {
+            cmds.insert(bas + i, k);
+        }
+
         for port in &self.ports {
             cmds.push(argv(&[
                 "add",
@@ -169,17 +187,7 @@ impl RedirectRules {
                 "quic",
                 "{ type filter hook output priority 0 ; policy accept ; }",
             ]),
-            argv(&[
-                "add",
-                "rule",
-                "inet",
-                t,
-                "quic",
-                "meta",
-                "skuid",
-                &self.engine_uid.to_string(),
-                "return",
-            ]),
+            self.muafiyet_kurali(t, "quic"),
             argv(&[
                 "add",
                 "rule",
@@ -200,6 +208,64 @@ impl RedirectRules {
                 "add", "rule", "inet", t, "quic", "udp", "dport", "443", "reject",
             ]),
         ]
+    }
+
+    /// Adres sorularını çalışan sunucuya çeviren kurallar.
+    ///
+    /// Hedefi zaten o sunucu olan sorular dışarıda bırakılıyor; yoksa
+    /// çevrilen paket tekrar kurala düşerdi.
+    fn dns_commands(&self) -> Vec<Vec<String>> {
+        let Some(up) = self.dns_upstream else {
+            return Vec::new();
+        };
+        // Yalnızca IPv4: çevrilecek sunucularımızın hepsi IPv4.
+        let SocketAddr::V4(v4) = up else {
+            return Vec::new();
+        };
+        let ip = v4.ip().to_string();
+        let hedef = format!("{}:{}", ip, v4.port());
+        let t = &self.table;
+        ["udp", "tcp"]
+            .iter()
+            .map(|proto| {
+                argv(&[
+                    "add", "rule", "inet", t, "output", "meta", "nfproto", "ipv4", "ip", "daddr",
+                    "!=", &ip, proto, "dport", "53", "dnat", "to", &hedef,
+                ])
+            })
+            .collect()
+    }
+
+    /// Kendi trafiğimizi muaf tutan kural.
+    ///
+    /// İşaret kullanılabiliyorsa yalnızca bizim açtığımız soketler muaf
+    /// tutulur; kullanılamıyorsa motorun kullanıcı kimliği muaf tutulur ve
+    /// root olarak çalışan her şey kapsam dışı kalır.
+    fn muafiyet_kurali(&self, table: &str, chain: &str) -> Vec<String> {
+        match self.exempt_mark {
+            Some(m) => argv(&[
+                "add",
+                "rule",
+                "inet",
+                table,
+                chain,
+                "meta",
+                "mark",
+                &m.to_string(),
+                "return",
+            ]),
+            None => argv(&[
+                "add",
+                "rule",
+                "inet",
+                table,
+                chain,
+                "meta",
+                "skuid",
+                &self.engine_uid.to_string(),
+                "return",
+            ]),
+        }
     }
 
     /// IPv6 sınaması için geçici tablo kuran komutlar.
@@ -559,5 +625,83 @@ mod ipv6_testleri {
     fn sinama_tek_komutla_kaldiriliyor() {
         let c = RedirectRules::selftest_cleanup("trdpi_deneme_x");
         assert_eq!(c, vec!["delete", "table", "inet", "trdpi_deneme_x"]);
+    }
+}
+
+#[cfg(test)]
+mod dns_testleri {
+    use super::*;
+
+    fn kurallar() -> RedirectRules {
+        RedirectRules::new(&SessionId::new(), 9443, 0)
+    }
+
+    #[test]
+    fn cevirme_kapaliyken_dns_kurali_yok() {
+        let cmds = kurallar().install_commands();
+        assert!(!cmds.iter().any(|c| c.contains(&"dnat".to_string())));
+    }
+
+    #[test]
+    fn udp_ve_tcp_icin_birer_kural() {
+        let mut r = kurallar();
+        r.dns_upstream = Some("77.88.8.8:1253".parse().unwrap());
+        let cmds = r.install_commands();
+        let dnat: Vec<_> = cmds
+            .iter()
+            .filter(|c| c.contains(&"dnat".to_string()))
+            .collect();
+        assert_eq!(dnat.len(), 2, "udp ve tcp için birer kural bekleniyor");
+        assert!(dnat.iter().any(|c| c.contains(&"udp".to_string())));
+        assert!(dnat.iter().any(|c| c.contains(&"tcp".to_string())));
+        assert!(dnat
+            .iter()
+            .all(|c| c.contains(&"77.88.8.8:1253".to_string())));
+    }
+
+    /// Çevrilen paket yeniden kurala düşerse döngü olur.
+    #[test]
+    fn hedefin_kendisi_disarida_birakiliyor() {
+        let mut r = kurallar();
+        r.dns_upstream = Some("77.88.8.8:1253".parse().unwrap());
+        for c in r
+            .install_commands()
+            .into_iter()
+            .filter(|c| c.contains(&"dnat".to_string()))
+        {
+            let i = c.iter().position(|x| x == "daddr").expect("daddr yok");
+            assert_eq!(c[i + 1], "!=", "hedef dışarıda bırakılmamış: {c:?}");
+            assert_eq!(c[i + 2], "77.88.8.8");
+        }
+    }
+
+    /// Adres soruları muafiyetten **önce** çevrilmeli: motorun kendi
+    /// sorularının da doğru yanıt alması gerekiyor.
+    #[test]
+    fn dns_kurali_muafiyetten_once() {
+        let mut r = kurallar();
+        r.dns_upstream = Some("77.88.8.8:1253".parse().unwrap());
+        let cmds = r.install_commands();
+        let dnat = cmds
+            .iter()
+            .position(|c| c.contains(&"dnat".to_string()))
+            .expect("dnat kuralı yok");
+        let muafiyet = cmds
+            .iter()
+            .position(|c| c.contains(&"return".to_string()))
+            .expect("muafiyet kuralı yok");
+        assert!(dnat < muafiyet, "dns kuralı muafiyetlerden sonra kalmış");
+    }
+
+    #[test]
+    fn ipv6_sunucu_kabul_edilmiyor() {
+        // Çevirdiğimiz sunucuların hepsi IPv4; yanlışlıkla IPv6 verilirse
+        // kural üretmiyoruz, sessizce yanlış iş yapmaktansa hiç yapmamak iyi.
+        let mut r = kurallar();
+        r.dns_upstream = Some("[2001:db8::1]:53".parse().unwrap());
+        assert!(!r
+            .install_commands()
+            .iter()
+            .any(|c| c.contains(&"dnat".to_string())));
     }
 }

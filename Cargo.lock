@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
  "trdpi-core",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-diagnostics"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde_json",
  "thiserror",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-dns"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "thiserror",
  "trdpi-core",
@@ -258,14 +258,14 @@ dependencies = [
 
 [[package]]
 name = "trdpi-gui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "fltk",
 ]
 
 [[package]]
 name = "trdpi-nfqueue"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
  "nfq",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-proxy"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "thiserror",
  "trdpi-core",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "trdpi-transparent"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "libc",
  "thiserror",

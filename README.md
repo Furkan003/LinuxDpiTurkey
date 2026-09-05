@@ -171,9 +171,33 @@ Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kap
 
 **Adresin her yolunun kapatılmasını aşamaz.** Alan adının bütün adresleri engellenmişse yapılabilecek bir şey kalmıyor; trafiği başka bir ülkeden geçirmek gerekir ve bu VPN demektir.
 
-**systemd-resolved kullanmayan dağıtımlarda adres düzeltmesi çalışmaz.** Standart dışı kapıya yönlendirme sistemin kendi aracıyla yapılıyor; o araç yoksa yerel bir adres vekili yazmak gerekir ve bu henüz yapılmadı.
-
 **Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
+
+## Farklı operatörler, farklı yöntemler
+
+Engelleme yöntemi operatörden operatöre değişiyor: kimi adrese bakıyor, kimi alan adına. Bu yüzden uygulama tek bir tekniğe bağlı kalmıyor.
+
+Bağlantılar kurulmuyorsa kendiliğinden bir sonraki tekniğe geçiyor — en az altı bağlantıya bakıp, kurulamayan oranı %30'u aşarsa. Sağlıklı bir hatta hiç devreye girmiyor.
+
+| Basamak | Teknik |
+|---|---|
+| 1 | yeniden deneme (varsayılan) |
+| 2 | site adını iki parçaya bölme |
+| 3 | sabit konumdan bölme |
+
+Hepsi tükenirse bunu açıkça söylüyor: *"Denenecek teknik kalmadı ve bağlantılar hâlâ kurulamıyor."*
+
+## Adres düzeltmesi çalışmazsa
+
+`systemd-resolved` olmayan dağıtımlarda çözümleyiciyi sistemin aracıyla değiştiremiyoruz. O durumda giden adres sorularını **doğrudan çalışan sunucuya çeviriyoruz.** Bu her dağıtımda çalışıyor ve kendi adres sunucusunu kullanan uygulamaları bile düzeltiyor.
+
+Ölçüldü: kural varken `dig @1.1.1.1 discord.com` doğru adresleri döndürüyor, kural yokken boş dönüyor.
+
+## Root olarak çalışan uygulamalar
+
+Döngüyü önlemek için kendi trafiğimizi kural dışı bırakmamız gerekiyor. Bu, "motorun kullanıcı kimliğini muaf tut" diye yapılırsa motor root çalıştığı için **root olarak çalışan her uygulama** kapsam dışı kalıyordu — `apt`, sistem servisleri, `sudo` ile çalıştırılan her şey.
+
+Artık yalnızca **bizim açtığımız soketler** muaf: giden bağlantıya bir işaret konuyor ve kural o işareti muaf tutuyor. Ölçüldü: root olarak yapılan üç istek sayacı 0'dan 3'e çıkardı, yani artık motordan geçiyorlar.
 
 ## Motor çökerse
 
@@ -212,7 +236,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 277 test
+cargo test                                   # 297 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -247,6 +271,9 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Motor çökerse kuralları kaldıran gözcü
 - [x] IPv6 (açılışta sınanarak)
 - [x] Düz HTTP (port 80) kapsamı
+- [x] Root olarak çalışan uygulamalar da kapsamda
+- [x] Teknik yükseltme merdiveni
+- [x] systemd-resolved olmayan dağıtımlar için adres çevirme
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm

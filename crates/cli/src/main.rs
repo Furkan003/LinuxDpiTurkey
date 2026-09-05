@@ -112,14 +112,25 @@ Seçenekler için:  trdpi --yardim"
 
     // 2. Adres çözümlemesi bozuksa önce onu düzelt; yanlış adrese
     //    bağlanılırken başka hiçbir yöntem işe yaramaz.
+    let mut dns_cevirme = None;
     if parmak_izi.dns_tampering {
         println!();
         println!("Adres çözümlemesi düzeltiliyor...");
         match dns_duzelt() {
             Ok(kaynak) => println!("  {kaynak} kullanılacak."),
             Err(mesaj) => {
+                // Sistemin aracıyla değiştiremedik. Yedek yol: giden adres
+                // sorularını doğrudan çalışan sunucuya çeviriyoruz. Hangi
+                // dağıtım olursa olsun çalışır, çünkü sisteme değil trafiğe
+                // müdahale ediyor.
                 println!("  {mesaj}");
-                println!("  Bu adımsız devam ediliyor.");
+                match dns_kaynagi_bul() {
+                    Some((adres, ad)) => {
+                        dns_cevirme = Some(adres);
+                        println!("  Adres soruları {ad} sunucusuna çevrilecek.");
+                    }
+                    None => println!("  Bu adımsız devam ediliyor."),
+                }
             }
         }
     }
@@ -155,7 +166,10 @@ Seçenekler için:  trdpi --yardim"
         return bitir(&format!("profil geçersiz: {e}"));
     }
 
-    let engine = TransparentEngine::new(TransparentConfig::default());
+    let engine = TransparentEngine::new(TransparentConfig {
+        dns_upstream: dns_cevirme,
+        ..TransparentConfig::default()
+    });
     let mut snapshot = match engine.prepare(SessionId::new()) {
         Ok(s) => s,
         Err(e) => {
@@ -210,11 +224,48 @@ Seçenekler için:  trdpi --yardim"
 
     let basladi = std::time::Instant::now();
     let mut son = std::time::Instant::now();
+    let mut denetim = std::time::Instant::now();
+    let mut basamak = 0usize;
+    let mut onceki = (0u64, 0u64); // (bağlantı, kurulan)
+    let mut tavan_soylendi = false;
+
     while !dur.load(Ordering::SeqCst) {
         if sure.is_some_and(|s| basladi.elapsed() >= s) {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
+
+        // Teknik yükseltme. Ölçtüğümüz hatta yeniden deneme yetiyor, ama
+        // engelleme yöntemi operatörden operatöre değişiyor: kimi adrese,
+        // kimi alan adına bakıyor. Bağlantılar kurulmuyorsa bir sonraki
+        // tekniğe geçiyoruz; tahmin etmek yerine deniyoruz.
+        if denetim.elapsed() >= Duration::from_secs(10) {
+            let s = engine.stats();
+            let yeni = (
+                s.accepted.saturating_sub(onceki.0),
+                s.established.saturating_sub(onceki.1),
+            );
+            onceki = (s.accepted, s.established);
+            if yukseltmeli_mi(yeni.0, yeni.1) {
+                if basamak + 1 < MERDIVEN.len() {
+                    basamak += 1;
+                    engine.set_fragmentation(MERDIVEN[basamak]);
+                    println!();
+                    println!(
+                        "Bağlantıların {}'i kurulamadı.",
+                        oran(yeni.0.saturating_sub(yeni.1), yeni.0)
+                    );
+                    println!("Farklı bir teknik deneniyor: {}", basamak_adi(basamak));
+                } else if !tavan_soylendi {
+                    tavan_soylendi = true;
+                    println!();
+                    println!("Denenecek teknik kalmadı ve bağlantılar hâlâ kurulamıyor.");
+                    println!("Bu hattaki engel bu araçların kapsamı dışında olabilir.");
+                }
+            }
+            denetim = std::time::Instant::now();
+        }
+
         if son.elapsed() >= Duration::from_secs(20) {
             let s = engine.stats();
             if s.accepted > 0 {
@@ -366,6 +417,60 @@ fn geri_al() {
     println!("Temiz.");
 }
 
+/// Çalışan bir adres sunucusu bulur.
+///
+/// [`dns_duzelt`] ile aynı arama, ama sistemi değiştirmiyor: adres yalnızca
+/// yönlendirme kuralında kullanılacak.
+fn dns_kaynagi_bul() -> Option<(std::net::SocketAddr, &'static str)> {
+    upstream::find_working(DEFAULT_CANARY, Duration::from_secs(4)).map(|(u, _)| (u.addr, u.label))
+}
+
+/// Denenecek teknikler, sırayla.
+///
+/// İlk basamak ölçülen hatta yeten teknik; sonrakiler başka operatörlerde
+/// işe yarayabilecek olanlar. Sıra rastgele değil: önce hiçbir şey
+/// bozmayan, sonra daha müdahaleci olan.
+const MERDIVEN: [trdpi_core::profile::FragmentationMode; 3] = [
+    trdpi_core::profile::FragmentationMode::Off,
+    trdpi_core::profile::FragmentationMode::SniAware,
+    trdpi_core::profile::FragmentationMode::Fixed { position: 2 },
+];
+
+/// Basamağın kullanıcıya gösterilecek adı.
+fn basamak_adi(i: usize) -> &'static str {
+    match i {
+        1 => "site adını iki parçaya bölme",
+        2 => "sabit konumdan bölme",
+        _ => "yeniden deneme",
+    }
+}
+
+/// Yeterli örnek toplandı mı ve kurulamayan bağlantı oranı yüksek mi?
+///
+/// Ölçüt "başarısız" sayacı değil, **kurulamayan** bağlantı: kabul edilip de
+/// karşı tarafa ulaşamayan her bağlantı sayılıyor. İstemci kendi zaman
+/// aşımıyla vazgeçtiğinde başarısız sayacı artmıyor, oysa kullanıcı
+/// açısından o da bir başarısızlık.
+///
+/// Az sayıda bağlantıya bakıp teknik değiştirmek gürültüye tepki vermek
+/// olur; en az altı bağlantı bekliyoruz. Eşik %30: normal bir hatta bu
+/// kadar başarısızlık olmaz.
+fn yukseltmeli_mi(yeni_baglanti: u64, yeni_kurulan: u64) -> bool {
+    if yeni_baglanti < 6 {
+        return false;
+    }
+    let kurulamayan = yeni_baglanti.saturating_sub(yeni_kurulan);
+    kurulamayan * 100 / yeni_baglanti > 30
+}
+
+/// Yüzde biçiminde oran.
+fn oran(pay: u64, payda: u64) -> String {
+    if payda == 0 {
+        return "0%".into();
+    }
+    format!("%{}", pay * 100 / payda)
+}
+
 /// Gözcü sürecini başlatır.
 ///
 /// Kendi ikilimizi çağırıyoruz; yolu `/proc/self/exe` üzerinden alıyoruz ki
@@ -395,7 +500,7 @@ fn bekci_baslat(tablolar: &[String]) -> Option<std::process::Child> {
 ///
 /// Düzgün kapanışta motor bekçiyi kendisi sonlandırır; o yüzden buraya
 /// düşülmesi zaten bir arıza demektir.
-fn bekci(args: &[String]) -> () {
+fn bekci(args: &[String]) {
     let Some(ana) = args.first().and_then(|s| s.parse::<u32>().ok()) else {
         return;
     };
@@ -535,11 +640,23 @@ fn udp_ozeti(sonuclar: &[trdpi_core::DiagnosticResult]) -> String {
             .unwrap_or("ölçülmedi")
     };
 
-    format!(
+    let mut satir = format!(
         "QUIC (UDP 443) yolu: {} · Gerçek zamanlı yol (oyun, sesli görüşme): {}",
         durum(DiagnosticKind::QuicReachability),
         durum(DiagnosticKind::RealtimeUdp),
-    )
+    );
+
+    // Bu ölçüm yolun genel açıklığına bakıyor. Ölçtüğümüz engel ise ada göre
+    // çalışıyor: denetim Initial paketini çözüp sunucu adını okuyor. Yani
+    // "açık" yazması engelli bir sitenin QUIC'le açılacağı anlamına gelmez.
+    // Kullanıcıyı yanıltmamak için bunu söylüyoruz.
+    if NetworkFingerprint::from_results(sonuclar).dns_tampering {
+        satir.push_str(
+            "
+  (QUIC ölçümü yolun genel durumuna bakar; ada göre konan engeli görmez.)",
+        );
+    }
+    satir
 }
 
 /// Sahibi ölmüş kimlik dosyasını siler.
@@ -685,6 +802,62 @@ mod testler {
         assert_eq!(bilinmeyen_secenek(&v(&["--surumm"])), Some("--surumm"));
         assert_eq!(bilinmeyen_secenek(&v(&["--version"])), Some("--version"));
         assert_eq!(bilinmeyen_secenek(&v(&["--olc", "--dur"])), Some("--dur"));
+    }
+
+    #[test]
+    fn az_ornekle_teknik_degistirilmiyor() {
+        // Tek bir başarısız bağlantı yüzünden teknik değiştirmek gürültüye
+        // tepki vermek olur. (bağlantı, kurulan)
+        assert!(!yukseltmeli_mi(1, 0));
+        assert!(!yukseltmeli_mi(5, 0));
+    }
+
+    #[test]
+    fn kurulamayan_baglantilarda_yukseltiliyor() {
+        assert!(yukseltmeli_mi(10, 5)); // yarısı kurulamadı
+        assert!(yukseltmeli_mi(8, 0)); // hiçbiri kurulamadı
+    }
+
+    #[test]
+    fn saglikli_hatta_yukseltilmiyor() {
+        assert!(!yukseltmeli_mi(100, 100));
+        assert!(!yukseltmeli_mi(100, 75));
+    }
+
+    #[test]
+    fn kurulan_baglantidan_fazlaysa_panik_yok() {
+        // Sayaçlar ayrı ayrı okunuyor; kurulan bir an için fazla görünebilir.
+        assert!(!yukseltmeli_mi(6, 10));
+    }
+
+    #[test]
+    fn merdiven_kapaliyla_basliyor() {
+        // İlk basamak hiçbir şey değiştirmemeli.
+        assert_eq!(MERDIVEN[0], trdpi_core::profile::FragmentationMode::Off);
+        assert_eq!(MERDIVEN.len(), 3);
+    }
+
+    #[test]
+    fn oran_hesabi() {
+        assert_eq!(oran(5, 10), "%50");
+        assert_eq!(oran(0, 0), "0%");
+    }
+
+    /// Kaynakta satır bölmek için kullanılan ters bölü girintiyi metne
+    /// taşıyabiliyor; bu daha önce iki kez oldu.
+    #[test]
+    fn udp_ozetinde_girinti_sizmasi_yok() {
+        use trdpi_core::{Classification, DiagnosticKind, DiagnosticResult};
+        let sonuclar = vec![DiagnosticResult {
+            kind: DiagnosticKind::DnsIntegrity,
+            target: "deneme".into(),
+            success: false,
+            latency: None,
+            classification: Classification::DnsTampered,
+            detail: None,
+        }];
+        let metin = udp_ozeti(&sonuclar);
+        assert!(!metin.contains("   "), "girinti sızmış: {metin:?}");
     }
 
     #[test]
