@@ -23,6 +23,8 @@ pub struct QueueRules {
     pub table: String,
     /// Kuyruk numarası.
     pub queue_num: u16,
+    /// QUIC için kuyruğa alınacak UDP kapıları.
+    pub udp_ports: Vec<u16>,
     /// Yakalanacak hedef portlar.
     pub ports: Vec<u16>,
 }
@@ -33,6 +35,7 @@ impl QueueRules {
         Self {
             table: session.object_name("queue"),
             queue_num,
+            udp_ports: Vec::new(),
             ports: vec![443],
         }
     }
@@ -73,6 +76,29 @@ impl QueueRules {
                 t,
                 "output",
                 "tcp",
+                "dport",
+                &port.to_string(),
+                "queue",
+                "flags",
+                "bypass",
+                "to",
+                &self.queue_num.to_string(),
+            ]));
+        }
+
+        // QUIC. Yalnızca IPv4: sahte paketi ham IPv4 soketinden gönderiyoruz,
+        // yakalayıp işleyemediğimiz trafiği kuyruğa almak anlamsız olur.
+        for port in &self.udp_ports {
+            cmds.push(argv(&[
+                "add",
+                "rule",
+                "inet",
+                t,
+                "output",
+                "meta",
+                "nfproto",
+                "ipv4",
+                "udp",
                 "dport",
                 &port.to_string(),
                 "queue",

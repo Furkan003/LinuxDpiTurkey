@@ -116,12 +116,28 @@ Seçenekler için:  trdpi --yardim"
         }
     }
 
-    // 3. Koru.
+    // 3. QUIC. Önce gerçek çözüm denenir.
+    //
+    // Ölçtük: DPI, QUIC Initial paketini çözüp içindeki sunucu adını okuyor.
+    // Aynı IP'ye masum bir adla bağlanmak çalışıyor, engelli adla
+    // çalışmıyor. Gerçek paketten önce gönderilen düşük ömürlü sahte bir
+    // Initial bunu aşıyor (18/18 deneme). Kurulamazsa eski davranışa
+    // düşüyoruz: QUIC'i kapatıp uygulamaları korunan TCP yoluna almak.
+    let nfq = trdpi_nfqueue::NfqueueEngine::new(trdpi_nfqueue::NfqueueConfig::default());
+    let mut quic_snapshot = None;
+    if !quic_gecir {
+        match quic_desync_kur(&nfq) {
+            Ok(s) => quic_snapshot = Some(s),
+            Err(e) => eprintln!("  QUIC desync kurulamadı ({e}); QUIC kapatılacak."),
+        }
+    }
+
+    // 4. Koru.
     let mut profile = Profile::baseline();
     profile.name = "Yeniden deneme".into();
     profile.supported_mechanisms = vec![Mechanism::TransparentProxy];
     profile.strategy.fragmentation = FragmentationMode::Off;
-    if !quic_gecir {
+    if !quic_gecir && quic_snapshot.is_none() {
         profile.protocols.quic = QuicMode::Block;
         // QUIC'i kapatmak kullanıcının görebileceği bir davranış değişikliği;
         // profil bunu düşük riskli diye etiketleyemez.
@@ -137,12 +153,14 @@ Seçenekler için:  trdpi --yardim"
         Err(e) => {
             // Adres ayarını değiştirmiş olabiliriz; koruma kurulmadıysa
             // kullanıcıyı yarım bir durumda bırakmıyoruz.
+            quic_geri_al(&nfq, quic_snapshot);
             dns_geri_al();
             return bitir(&e.user_message());
         }
     };
     if let Err(e) = engine.apply(&profile, &mut snapshot) {
         let _ = engine.rollback(snapshot);
+        quic_geri_al(&nfq, quic_snapshot);
         dns_geri_al();
         return bitir(&e.user_message());
     }
@@ -156,6 +174,8 @@ Seçenekler için:  trdpi --yardim"
     println!();
     if quic_gecir {
         println!("QUIC açık bırakıldı (--quic-gecir).");
+    } else if quic_snapshot.is_some() {
+        println!("QUIC engeli aşılıyor; uygulamalar hızlı yolu kullanmaya devam ediyor.");
     } else {
         println!("QUIC (UDP 443) kapatıldı; uygulamalar korunan TCP yolunu kullanıyor.");
     }
@@ -193,6 +213,9 @@ Seçenekler için:  trdpi --yardim"
         "Toplam — bağlantı: {} · kurulan: {} · yeniden deneme: {} · başarısız: {}",
         s.accepted, s.established, s.retries, s.failed
     );
+    if let Some(q) = quic_ozeti(&nfq) {
+        println!("{q}");
+    }
     if s.alternates > 0 {
         println!(
             "{} bağlantı, özgün adres çalışmadığı için başka bir adresten kuruldu.",
@@ -209,6 +232,7 @@ Seçenekler için:  trdpi --yardim"
     // kalkmadan çözümleyiciyi değiştirirsek arada bir an yanlış adrese
     // giden trafik oluşur.
     let yonlendirme = engine.rollback(snapshot);
+    quic_geri_al(&nfq, quic_snapshot);
     dns_geri_al();
     match yonlendirme {
         Ok(()) => println!("Temiz."),
@@ -317,6 +341,58 @@ fn geri_al() {
     println!("Temiz.");
 }
 
+/// QUIC motorunun ne iş yaptığının tek satırlık özeti.
+///
+/// Hiç Initial görmediyse satır basılmıyor: kullanıcıya "0 paket" demenin
+/// bir faydası yok.
+fn quic_ozeti(nfq: &trdpi_nfqueue::NfqueueEngine) -> Option<String> {
+    let s = nfq.stats();
+    (s.quic_seen > 0).then(|| {
+        format!(
+            "QUIC — görülen bağlantı: {} · engeli aşılan: {}",
+            s.quic_seen, s.quic_faked
+        )
+    })
+}
+
+/// QUIC engelini aşan motoru kurar.
+///
+/// TCP tarafına dokunmuyor: sahte paket tekniği TCP için bu hatta ölçüldü ve
+/// işe yaramadı. QUIC için yaradı; motoru yalnızca onun için çalıştırıyoruz.
+fn quic_desync_kur(
+    nfq: &trdpi_nfqueue::NfqueueEngine,
+) -> Result<trdpi_core::backend::Snapshot, String> {
+    use trdpi_core::profile::TtlMode;
+
+    let mut p = Profile::baseline();
+    p.name = "QUIC desync".into();
+    p.supported_mechanisms = vec![Mechanism::Nfqueue];
+    p.strategy.fragmentation = FragmentationMode::Off;
+    p.strategy.ttl = TtlMode::Off;
+    p.protocols.quic = QuicMode::Desync;
+    p.validate().map_err(|e| e.to_string())?;
+
+    let mut snapshot = nfq
+        .prepare(SessionId::new())
+        .map_err(|e| e.user_message().to_string())?;
+    nfq.apply(&p, &mut snapshot)
+        .map_err(|e| e.user_message().to_string())?;
+    Ok(snapshot)
+}
+
+/// QUIC motorunu durdurur; kurulmamışsa hiçbir şey yapmaz.
+fn quic_geri_al(
+    nfq: &trdpi_nfqueue::NfqueueEngine,
+    snapshot: Option<trdpi_core::backend::Snapshot>,
+) {
+    if let Some(s) = snapshot {
+        if let Err(e) = nfq.rollback(s) {
+            eprintln!("QUIC kuralları kaldırılamadı: {}", e.user_message());
+            eprintln!("Kurtarma:  sudo trdpi --geri");
+        }
+    }
+}
+
 /// Adres çözümleme ayarını eski haline getirir.
 ///
 /// Koruma **nasıl biterse bitsin** çağrılmalı: Ctrl+C, sürenin dolması ya da
@@ -363,6 +439,12 @@ fn dns_geri_al() {
 ///
 /// İki yol ayrı ayrı söyleniyor: kullanıcı "oyunum çalışacak mı" sorusunun
 /// cevabını QUIC'ten değil buradan alıyor.
+///
+/// **Ne ölçmüyor:** buradaki QUIC ölçümü yolun genel olarak açık olup
+/// olmadığına bakar. Bu hatta ölçtüğümüz engel ise ada göre çalışıyor — DPI,
+/// Initial paketini çözüp sunucu adını okuyor ve yalnızca engelli adlarda
+/// datagramı düşürüyor. Yani burada "açık" yazması, engelli bir sitenin QUIC
+/// üzerinden açılacağı anlamına gelmez. O engeli koruma açıkken aşıyoruz.
 fn udp_ozeti(sonuclar: &[trdpi_core::DiagnosticResult]) -> String {
     use trdpi_core::DiagnosticKind;
 
@@ -375,7 +457,7 @@ fn udp_ozeti(sonuclar: &[trdpi_core::DiagnosticResult]) -> String {
     };
 
     format!(
-        "QUIC (UDP 443): {} · Gerçek zamanlı yol (oyun, sesli görüşme): {}",
+        "QUIC (UDP 443) yolu: {} · Gerçek zamanlı yol (oyun, sesli görüşme): {}",
         durum(DiagnosticKind::QuicReachability),
         durum(DiagnosticKind::RealtimeUdp),
     )

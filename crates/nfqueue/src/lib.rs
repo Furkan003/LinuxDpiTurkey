@@ -29,13 +29,14 @@
 pub mod fake;
 pub mod nft;
 pub mod packet;
+pub mod quic;
 pub mod raw;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use trdpi_core::backend::{Backend, BackendError, EngineId, ProbeContext, ProbeResult, Snapshot};
-use trdpi_core::profile::{FragmentationMode, Profile, TtlMode};
+use trdpi_core::profile::{FragmentationMode, Profile, QuicMode, TtlMode};
 use trdpi_core::score::{HealthReport, ScoreInputs};
 use trdpi_core::{Capabilities, Classification, Mechanism, SessionId};
 
@@ -50,6 +51,13 @@ pub struct NfqueueConfig {
     pub capture_ports: Vec<u16>,
     /// Sahte pakette kullanılacak zararsız alan adı.
     pub fake_host: Vec<u8>,
+    /// QUIC için kuyruğa alınacak UDP kapıları.
+    pub quic_ports: Vec<u16>,
+    /// QUIC sahte paketlerinin ömürleri.
+    ///
+    /// Birden fazla değer, denetimin farklı uzaklıkta olduğu ağlarda da
+    /// tutması için. Maliyeti bağlantı başına birkaç pakete kalıyor.
+    pub quic_ttls: Vec<u8>,
 }
 
 impl Default for NfqueueConfig {
@@ -58,6 +66,8 @@ impl Default for NfqueueConfig {
             queue_num: 4200,
             capture_ports: vec![443],
             fake_host: fake::DEFAULT_FAKE_HOST.to_vec(),
+            quic_ports: vec![443],
+            quic_ttls: quic::DEFAULT_TTLS.to_vec(),
         }
     }
 }
@@ -66,6 +76,8 @@ impl Default for NfqueueConfig {
 struct Counters {
     seen: AtomicU64,
     faked: AtomicU64,
+    quic_seen: AtomicU64,
+    quic_faked: AtomicU64,
     build_errors: AtomicU64,
     send_errors: AtomicU64,
 }
@@ -77,6 +89,10 @@ pub struct StatsSnapshot {
     pub seen: u64,
     /// Sahte kopya gönderilen paket sayısı.
     pub faked: u64,
+    /// Kuyruktan geçen QUIC Initial sayısı.
+    pub quic_seen: u64,
+    /// Sahte kopya gönderilen QUIC Initial sayısı.
+    pub quic_faked: u64,
     /// Sahte paket kurulamayan durum sayısı.
     pub build_errors: u64,
     /// Sahte paket kurulup da gönderilemeyen durum sayısı.
@@ -88,6 +104,16 @@ impl StatsSnapshot {
     pub fn errors(&self) -> u64 {
         self.build_errors + self.send_errors
     }
+}
+
+/// Kuyruk işçisine geçirilen ayarlar.
+struct WorkerConfig {
+    queue_num: u16,
+    /// TCP sahte paketinin ömrü; `None` ise TCP tarafında iş yapılmaz.
+    ttl: Option<u8>,
+    fake_host: Vec<u8>,
+    /// QUIC sahte paketlerinin ömürleri; boşsa QUIC'e dokunulmaz.
+    quic_ttls: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -122,6 +148,8 @@ impl NfqueueEngine {
         StatsSnapshot {
             seen: self.counters.seen.load(Ordering::Relaxed),
             faked: self.counters.faked.load(Ordering::Relaxed),
+            quic_seen: self.counters.quic_seen.load(Ordering::Relaxed),
+            quic_faked: self.counters.quic_faked.load(Ordering::Relaxed),
             build_errors: self.counters.build_errors.load(Ordering::Relaxed),
             send_errors: self.counters.send_errors.load(Ordering::Relaxed),
         }
@@ -143,10 +171,15 @@ impl NfqueueEngine {
 
     /// Bu motorun profili uygulayıp uygulayamayacağı.
     ///
-    /// TTL kapalıysa yapacak bir şey yoktur — o durumda parçalama motorları
-    /// daha uygundur.
+    /// TCP tarafında TTL kapalıysa ve QUIC desync de istenmiyorsa yapacak bir
+    /// şey yoktur — o durumda parçalama motorları daha uygundur.
     pub fn supports_profile(profile: &Profile) -> bool {
-        Self::fake_ttl(profile).is_some()
+        Self::fake_ttl(profile).is_some() || Self::quic_desync(profile)
+    }
+
+    /// Profil QUIC üzerinde desync istiyor mu?
+    pub fn quic_desync(profile: &Profile) -> bool {
+        profile.protocols.quic == QuicMode::Desync
     }
 }
 
@@ -204,9 +237,13 @@ impl Backend for NfqueueEngine {
     }
 
     fn apply(&self, profile: &Profile, snapshot: &mut Snapshot) -> Result<(), BackendError> {
-        let ttl = Self::fake_ttl(profile).ok_or_else(|| {
-            BackendError::ApplyFailed("bu motor TTL tekniği olmadan bir işe yaramaz".into())
-        })?;
+        let ttl = Self::fake_ttl(profile);
+        let quic = Self::quic_desync(profile);
+        if ttl.is_none() && !quic {
+            return Err(BackendError::ApplyFailed(
+                "bu motor TTL tekniği ya da QUIC desync olmadan bir işe yaramaz".into(),
+            ));
+        }
 
         let mut slot = self
             .running
@@ -217,15 +254,33 @@ impl Backend for NfqueueEngine {
         }
 
         let mut rules = QueueRules::new(&snapshot.session, self.config.queue_num);
-        rules.ports = self.config.capture_ports.clone();
+        // Yalnızca gerçekten iş yapacağımız trafiği kuyruğa alıyoruz; boşuna
+        // kuyruğa alınan her paket gecikme demek.
+        rules.ports = if ttl.is_some() {
+            self.config.capture_ports.clone()
+        } else {
+            Vec::new()
+        };
+        rules.udp_ports = if quic {
+            self.config.quic_ports.clone()
+        } else {
+            Vec::new()
+        };
 
         // Kuyruğu önce açıyoruz: kural kurulup dinleyen olmazsa `bypass`
         // sayesinde trafik yine geçer, ama koruma da olmaz.
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker = start_worker(
-            self.config.queue_num,
-            ttl,
-            self.config.fake_host.clone(),
+            WorkerConfig {
+                queue_num: self.config.queue_num,
+                ttl,
+                fake_host: self.config.fake_host.clone(),
+                quic_ttls: if quic {
+                    self.config.quic_ttls.clone()
+                } else {
+                    Vec::new()
+                },
+            },
             Arc::clone(&self.counters),
             Arc::clone(&shutdown),
         )?;
@@ -322,13 +377,18 @@ impl Backend for NfqueueEngine {
 /// Kuyruğu dinleyen işlemciyi başlatır.
 #[cfg(target_os = "linux")]
 fn start_worker(
-    queue_num: u16,
-    ttl: u8,
-    fake_host: Vec<u8>,
+    config: WorkerConfig,
     counters: Arc<Counters>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<Option<std::thread::JoinHandle<()>>, BackendError> {
     use nfq::{Queue, Verdict};
+
+    let WorkerConfig {
+        queue_num,
+        ttl,
+        fake_host,
+        quic_ttls,
+    } = config;
 
     let sender = raw::RawSender::new().map_err(|e| match e.kind() {
         std::io::ErrorKind::PermissionDenied => BackendError::PrivilegeDenied,
@@ -344,6 +404,7 @@ fn start_worker(
     queue.set_nonblocking(true);
 
     let handle = std::thread::spawn(move || {
+        let mut tohum: u64 = 0x9E37_79B9_7F4A_7C15;
         while !shutdown.load(Ordering::SeqCst) {
             let mut msg = match queue.recv() {
                 Ok(m) => m,
@@ -359,7 +420,36 @@ fn start_worker(
             counters.seen.fetch_add(1, Ordering::Relaxed);
 
             let payload = msg.get_payload();
-            if fake::should_fake(payload) {
+
+            // QUIC: Initial paketinden hemen önce düşük ömürlü sahteler.
+            if !quic_ttls.is_empty() {
+                let initial = quic::udp_payload_offset(payload)
+                    .and_then(|b| payload.get(b..))
+                    .is_some_and(quic::is_initial);
+                if initial {
+                    counters.quic_seen.fetch_add(1, Ordering::Relaxed);
+                    let mut gonderildi = false;
+                    for t in &quic_ttls {
+                        tohum = tohum.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                        match quic::build_fake(payload, *t, tohum) {
+                            Some(f) => match sender.send(&f) {
+                                Ok(()) => gonderildi = true,
+                                Err(_) => {
+                                    counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                                }
+                            },
+                            None => {
+                                counters.build_errors.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    if gonderildi {
+                        counters.quic_faked.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+
+            if let (Some(ttl), true) = (ttl, fake::should_fake(payload)) {
                 match fake::build_fake(payload, ttl, &fake_host) {
                     Ok(f) => match sender.send(&f) {
                         Ok(()) => {
@@ -392,9 +482,7 @@ fn start_worker(
 
 #[cfg(not(target_os = "linux"))]
 fn start_worker(
-    _queue_num: u16,
-    _ttl: u8,
-    _fake_host: Vec<u8>,
+    _config: WorkerConfig,
     _counters: Arc<Counters>,
     _shutdown: Arc<AtomicBool>,
 ) -> Result<Option<std::thread::JoinHandle<()>>, BackendError> {

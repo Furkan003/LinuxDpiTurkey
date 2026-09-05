@@ -47,7 +47,7 @@ Terminal kullanmak isteyenler için:
 | `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
 | `sudo trdpi --durdur` | çalışan kopyaları durdur |
 | `sudo trdpi --geri` | yapılan her değişikliği geri al |
-| `sudo trdpi --quic-gecir` | QUIC'i kapatma (aşağıya bak) |
+| `sudo trdpi --quic-gecir` | QUIC'e hiç dokunma (aşağıya bak) |
 
 ## Gerçekten işe yarıyor mu
 
@@ -83,11 +83,31 @@ Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediği
 
 Ayar **bağlantı bazında** uygulanıyor ve açılışta aynı komutu tekrarlayan küçük bir systemd birimiyle kalıcılaşıyor. Genel (global) ayar dosyası yazmak işe yaramıyordu: systemd-resolved sorguları bağlantının kendi çözümleyicisine yönlendirdiği için, DHCP'den adres alan her kurulumda genel ayar hiç devreye girmiyordu. Ölçüldü ve düzeltildi.
 
-**2. Uygulamaların boşuna beklemesi.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni bağlantı yöntemi. Bu yol engelliyse yanıt hiç gelmiyor ve uygulama zaman aşımını bekleyip ancak sonra TCP'ye düşüyor. Bekleme boyunca ekranda hiçbir şey olmuyor.
+**2. QUIC engeli.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni ve daha hızlı bağlantı yöntemi.
 
-Uygulama QUIC'i kapatıyor: UDP 443 **reddediliyor**, sessizce düşürülmüyor. Fark önemli — reddedilen istek uygulamaya anında hata döner ve o saniye korunan TCP yoluna geçer; düşürülen istek zaman aşımı boyunca bekletirdi.
+Bu yolun nasıl engellendiğini ölçtük: **DPI, QUIC Initial paketini çözüp içindeki sunucu adını okuyor** ve engelli ada denk gelince datagramı düşürüyor. Kanıt kesin — aynı IP'ye, aynı porttan, tek değişken sunucu adı:
 
-Yalnızca 443 kapatılıyor. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile açık bırakabilir.
+| İstek | Sonuç |
+|---|---|
+| Discord'un IP'si + `cloudflare-quic.com` adı | el sıkışma **0.75 sn** |
+| Discord'un IP'si + `discord.com` adı | **zaman aşımı** |
+
+**Uygulama bu engeli aşıyor.** Gerçek paketten hemen önce, hedefe ulaşamayacak kadar düşük ömürlü bozuk bir Initial gönderiliyor. Denetim kararını o pakete göre veriyor; sahte paket yolda ölüyor, gerçek paket geçiyor.
+
+Ölçüldü — Discord'a HTTP/3 isteği:
+
+| | Sonuç |
+|---|---|
+| Koruma kapalı | yanıt yok |
+| Koruma açık | **HTTP/3 200**, 0.15-0.19 sn |
+
+Aynı sayfa korunan TCP yolundan 0.88 saniye sürüyor. Yani engeli aşmak, kapatmaya göre **beş kat hızlı.**
+
+Sahte paketin ömrü ayarlanabilir; varsayılan iki değer (4 ve 8) gönderiliyor, çünkü denetimin kaç sıçrama uzakta olduğu ağdan ağa değişir. Bu hatta ölçüm: TTL 1-2 çalışmıyor, **3-12 arası 18 denemenin 18'i başarılı.**
+
+IP parçalama da denendi ve **işe yaramadı** — bu denetim parçaları birleştiriyor.
+
+Motor QUIC'i aşamazsa (çekirdek desteği ya da yetki yoksa) eski davranışa düşülür: UDP 443 reddedilir ve uygulamalar anında korunan TCP yoluna geçer. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine hiçbir durumda dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile QUIC'i tamamen serbest bırakabilir.
 
 **3. Adresin tümüyle kapatılması.** Bazen engel alan adına değil, belirli bir adrese konuyor: o adrese giden hiçbir paket dönmüyor. Aynı alan adı çoğu zaman birden fazla adreste durduğu için (büyük siteler onlarca adres kullanır), engel hepsine konmamış olabilir.
 
@@ -176,7 +196,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 255 test
+cargo test                                   # 269 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -207,6 +227,7 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] İmzalı apt deposu
 - [x] AUR paketi (Arch)
 - [x] QUIC (UDP 443) kapsamı
+- [x] QUIC engelini aşma (sahte Initial + düşük TTL)
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
