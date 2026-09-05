@@ -2,25 +2,25 @@ Origin: TR-DPI
 Label: TR-DPI
 Suite: stable
 Codename: stable
-Version: 0.1.5
+Version: 0.1.6
 Architectures: amd64
 Components: main
 Description: Turkiye'de engellenen sitelere erisimi acan uygulama
-Date: Sat, 05 Sep 2026 19:39:57 +0000
-Date: Sat, 05 Sep 2026 19:39:57 +0000
+Date: Sat, 05 Sep 2026 20:31:31 +0000
+Date: Sat, 05 Sep 2026 20:31:31 +0000
 MD5Sum:
- 6258a4c370fee7502dd49e798e0bcc33              255 Release
- 2638a609507d24003b6f8228af591569              955 main/binary-amd64/Packages
- 913d736cf71135244b77b985e745c0c2              699 main/binary-amd64/Packages.gz
+ 9a1bea88e3311177ed942b9242cedb22              255 Release
+ e75c08f3b6146d2f855534967c95712d              955 main/binary-amd64/Packages
+ 0fd41bdc19d2b1de2c7d7dcbc1d80483              702 main/binary-amd64/Packages.gz
 SHA1:
- 9609713d8ba28704c8533524021268eae03e625e              255 Release
- c0ef77ef595168328f085a3c6a22eb2564179c83              955 main/binary-amd64/Packages
- da748b4565b2e90745de85a4b90aef8dd71ed806              699 main/binary-amd64/Packages.gz
+ 03415998bc0d9ef3fccc72a0e77ba72d0b598d3d              255 Release
+ 57bf5fcc6af698b86e7f8ab6e48659215619f296              955 main/binary-amd64/Packages
+ 5603fad5d2406d68a7e25579a796ff1743d29d7c              702 main/binary-amd64/Packages.gz
 SHA256:
- af0a0311ab194052d3bb51df84c339d8b7c6a49e05dbf4ad5082aeb47c5ee46c              255 Release
- b9e92ec7b19b696b9d7b852684be80c80405e91441db27c4a1a78a2638b2e3c6              955 main/binary-amd64/Packages
- 397b0051dfa4f2814699dde9c34067556e515ca4a0219291c0bde428dbc24902              699 main/binary-amd64/Packages.gz
+ 7c557f9999eed6d5a69981629b58c80ab983d8fcfcd4dba17f4a034000b9298a              255 Release
+ d7ff4139eac0cbc7130b3accd0ba59bcb8bd802188d80606e056b7aecfe5e242              955 main/binary-amd64/Packages
+ f04d77fa7dd37740cad57b75d8a12ac6b9eeef024ac68f9b49a15ceb2140765c              702 main/binary-amd64/Packages.gz
 SHA512:
- 792ad58f95cdcd05f2f7c91d04992a09441461afe1e21075d3bf02b0dbd6cbd24e075a09918721efb30937e2f49284a3dba13a432769c73ce83003230803ba9c              255 Release
- db747b1c709660952aab105f883a38fcb3a8064f71a4805f7398020e0b0c286f6c8682a630ae8fa98d57521d5d3108a6ca46917e5664a078226772ac9248f2f2              955 main/binary-amd64/Packages
- 4d03ea3119c162dc7f23b49d910aae6b181e579ba50348b363661da7124b28cc4fe8f04a81436b819ef58644b522d0a8255221d17068c91f9385ba7ef2859461              699 main/binary-amd64/Packages.gz
+ 0924299c12915d235bccecb166ddcd28a8a81f925dba8bc19b30d9e95cb6c08adb0261f7518f556f169b00f1c54f60daee596c2c77d51239fe0f0754ab712f18              255 Release
+ 9a9e60193a694cdb952ade2c5a0bc779e9414885636d3c86e2c34c55a3ba2cc78b54efb7a79c354938c393b6a0e73667002ec8967491020a7163996ac1852a96              955 main/binary-amd64/Packages
+ 7523cf27156fbabdde011b4a6da13cda3f5525b1a45389ace2db032c2aff676752c8b1c59873cb1ac9e06d3638ec7d5858090282e5a932eb3e6a43cb200d5704              702 main/binary-amd64/Packages.gz
