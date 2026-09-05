@@ -171,9 +171,25 @@ Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kap
 
 **Adresin her yolunun kapatılmasını aşamaz.** Alan adının bütün adresleri engellenmişse yapılabilecek bir şey kalmıyor; trafiği başka bir ülkeden geçirmek gerekir ve bu VPN demektir.
 
-**IPv6 trafiğini kapsamına almaz.** Yönlendirme yalnızca IPv4 üzerinde çalışıyor; özgün hedefi okuyan çekirdek seçeneğinin IPv6 karşılığı ayrı bir iş ve elimizde IPv6'lı bir ölçüm hattı yok. Yakalayıp taşıyamadığımız trafiği kesmemek için IPv6 bilinçli olarak **kural dışı** bırakıldı: korumasız, ama çalışır. Adres düzeltmesi IPv6 hedeflerine de fayda sağlıyor.
+**systemd-resolved kullanmayan dağıtımlarda adres düzeltmesi çalışmaz.** Standart dışı kapıya yönlendirme sistemin kendi aracıyla yapılıyor; o araç yoksa yerel bir adres vekili yazmak gerekir ve bu henüz yapılmadı.
 
 **Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
+
+## Motor çökerse
+
+Yönlendirme kuralı dururken dinleyen bir motor yoksa **bütün HTTPS kesilir** — ölçüldü, istek 13 ms'de reddediliyor. Bu yüzden motor açılırken yanında küçük bir gözcü süreç başlatıyor. Motor nasıl ölürse ölsün (`kill -9`, bellek yetersizliği, panik) gözcü kuralları kaldırıyor ve adres ayarını geri getiriyor.
+
+Ölçüldü: motor `kill -9` ile öldürüldükten sonra nftables tabloları **0**, kimlik dosyası silinmiş, internet çalışıyor (`kod=200`). Gözcü olmasaydı bu `000` olurdu.
+
+QUIC tarafında bu sorun yok: kuyruk kuralı `bypass` bayrağıyla kuruluyor, motor ölse de paketler geçer.
+
+## IPv6
+
+Yönlendirme IPv6'yı da kapsıyor — ama **yalnızca taşıyabildiğimizi sınayıp doğruladıktan sonra.**
+
+Sorun şu: `redirect` kuralı IPv6'yı yakalayabilir ama biz bağlantının özgün hedefini okuyamazsak onu iletemeyiz ve trafik tamamen kesilir. O yüzden motor her açılışta geçici bir kural kurup kendi kendine bir bağlantı yapıyor ve çekirdeğin NAT öncesi hedefi doğru verdiğini görüyor. Sınama geçerse IPv6 kuralları kuruluyor, geçmezse IPv6'ya hiç dokunulmuyor: korumasız ama **çalışır** kalıyor.
+
+Sınama loopback üzerinde yapılıyor; ölçülen şey adresin küresel olup olmamasına bakmadığı için IPv6 bağlantısı olmayan makinede bile mekanizma doğrulanabiliyor.
 
 ## Gizlilik
 
@@ -196,7 +212,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 269 test
+cargo test                                   # 277 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -228,6 +244,9 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] AUR paketi (Arch)
 - [x] QUIC (UDP 443) kapsamı
 - [x] QUIC engelini aşma (sahte Initial + düşük TTL)
+- [x] Motor çökerse kuralları kaldıran gözcü
+- [x] IPv6 (açılışta sınanarak)
+- [x] Düz HTTP (port 80) kapsamı
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm

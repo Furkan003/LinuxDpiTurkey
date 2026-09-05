@@ -30,6 +30,13 @@ pub struct RedirectRules {
     /// girer. Yalnızca 443 hedeflenir; oyunların gerçek zamanlı trafiği
     /// yüksek portlarda akar ve dokunulmaz.
     pub quic_block: bool,
+    /// IPv6 trafiği de yönlendirilsin mi.
+    ///
+    /// Varsayılan kapalı. Motor açılışta çekirdeğin özgün hedefi IPv6 için
+    /// verip vermediğini **sınıyor** ve ancak geçerse burayı açıyor:
+    /// yakalayıp taşıyamadığımız trafiği kesmek, korumasız bırakmaktan
+    /// çok daha kötü olur.
+    pub ipv6: bool,
 }
 
 impl RedirectRules {
@@ -39,6 +46,7 @@ impl RedirectRules {
             table: session.object_name("redirect"),
             port,
             engine_uid,
+            ipv6: false,
             ports: vec![443],
             quic_block: false,
         }
@@ -89,12 +97,10 @@ impl RedirectRules {
             ]),
         ];
 
-        // Yalnızca IPv4. `inet` ailesindeki kural niteleyicisiz yazılırsa
-        // IPv6'yı da yakalar; oysa dinleyicimiz 127.0.0.1'de ve özgün hedefi
-        // yalnızca IPv4 seçeneğiyle (`SOL_IP`) okuyabiliyoruz. Yakalayıp
-        // taşıyamadığımız trafik tamamen kesilirdi — dokunmamak yeğdir.
-        // IPv6 böylece korumasız ama **çalışır** kalıyor; adres düzeltmesi
-        // ona da fayda sağlıyor.
+        // Aile açıkça belirtiliyor. `inet` ailesindeki kural niteleyicisiz
+        // yazılırsa her ikisini de yakalar; IPv6'yı ancak taşıyabildiğimizi
+        // sınayarak doğruladığımızda açıyoruz. Yakalayıp taşıyamadığımız
+        // trafik tamamen kesilirdi — korumasız bırakmak yeğdir.
         for port in &self.ports {
             cmds.push(argv(&[
                 "add",
@@ -112,6 +118,27 @@ impl RedirectRules {
                 "to",
                 &format!(":{}", self.port),
             ]));
+        }
+
+        if self.ipv6 {
+            for port in &self.ports {
+                cmds.push(argv(&[
+                    "add",
+                    "rule",
+                    "inet",
+                    t,
+                    "output",
+                    "meta",
+                    "nfproto",
+                    "ipv6",
+                    "tcp",
+                    "dport",
+                    &port.to_string(),
+                    "redirect",
+                    "to",
+                    &format!(":{}", self.port),
+                ]));
+            }
         }
 
         if self.quic_block {
@@ -173,6 +200,47 @@ impl RedirectRules {
                 "add", "rule", "inet", t, "quic", "udp", "dport", "443", "reject",
             ]),
         ]
+    }
+
+    /// IPv6 sınaması için geçici tablo kuran komutlar.
+    ///
+    /// Ayrı tabloda duruyor ki sınama bitince tek komutla silinsin ve asıl
+    /// kuralların arasına karışmasın. `::1` hedefli, seçilen kapıya giden
+    /// bağlantıyı dinleyicimize çeviriyor; motor sonra bağlanıp çekirdeğin
+    /// özgün hedefi doğru verip vermediğine bakıyor.
+    pub fn selftest_commands(table: &str, listener_port: u16, test_port: u16) -> Vec<Vec<String>> {
+        vec![
+            argv(&["add", "table", "inet", table]),
+            argv(&[
+                "add",
+                "chain",
+                "inet",
+                table,
+                "output",
+                "{ type nat hook output priority -100 ; policy accept ; }",
+            ]),
+            argv(&[
+                "add",
+                "rule",
+                "inet",
+                table,
+                "output",
+                "ip6",
+                "daddr",
+                "::1",
+                "tcp",
+                "dport",
+                &test_port.to_string(),
+                "redirect",
+                "to",
+                &format!(":{listener_port}"),
+            ]),
+        ]
+    }
+
+    /// Sınama tablosunu kaldıran komut.
+    pub fn selftest_cleanup(table: &str) -> Vec<String> {
+        argv(&["delete", "table", "inet", table])
     }
 
     /// Kuralları kaldıran `nft` çağrısı.
@@ -432,5 +500,64 @@ mod tests {
                 "tüm kural kümesine dokunuyor: {cmd}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ipv6_testleri {
+    use super::*;
+
+    fn kurallar() -> RedirectRules {
+        let mut r = RedirectRules::new(&SessionId::new(), 9443, 0);
+        r.ports = vec![443, 80];
+        r
+    }
+
+    #[test]
+    fn ipv6_varsayilan_olarak_kapali() {
+        let cmds = kurallar().install_commands();
+        assert!(
+            !cmds.iter().any(|c| c.contains(&"ipv6".to_string())),
+            "sınanmadan IPv6 kuralı kurulmamalı"
+        );
+    }
+
+    #[test]
+    fn ipv6_acikken_her_kapi_icin_kural_var() {
+        let mut r = kurallar();
+        r.ipv6 = true;
+        let cmds = r.install_commands();
+        let v6 = cmds
+            .iter()
+            .filter(|c| c.contains(&"ipv6".to_string()) && c.contains(&"redirect".to_string()))
+            .count();
+        assert_eq!(v6, 2, "443 ve 80 için birer IPv6 kuralı bekleniyor");
+    }
+
+    #[test]
+    fn ipv4_kurallari_ipv6_acikken_de_duruyor() {
+        let mut r = kurallar();
+        r.ipv6 = true;
+        let cmds = r.install_commands();
+        let v4 = cmds
+            .iter()
+            .filter(|c| c.contains(&"ipv4".to_string()) && c.contains(&"redirect".to_string()))
+            .count();
+        assert_eq!(v4, 2);
+    }
+
+    #[test]
+    fn sinama_kendi_tablosunda() {
+        let cmds = RedirectRules::selftest_commands("trdpi_deneme_x", 9443, 9);
+        for c in &cmds {
+            assert!(c.contains(&"trdpi_deneme_x".to_string()), "{c:?}");
+        }
+        assert!(cmds.iter().any(|c| c.contains(&"::1".to_string())));
+    }
+
+    #[test]
+    fn sinama_tek_komutla_kaldiriliyor() {
+        let c = RedirectRules::selftest_cleanup("trdpi_deneme_x");
+        assert_eq!(c, vec!["delete", "table", "inet", "trdpi_deneme_x"]);
     }
 }

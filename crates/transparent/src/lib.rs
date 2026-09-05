@@ -62,7 +62,11 @@ impl Default for TransparentConfig {
     fn default() -> Self {
         Self {
             port: 9443,
-            capture_ports: vec![443],
+            // 80 de kapsamda: engellenen siteler düz HTTP üzerinden de
+            // denenebiliyor ve o yolda da yeniden deneme işe yarıyor.
+            // ClientHello olmadığı için alan adı okunamaz — yalnızca yedek
+            // adres yolu devre dışı kalır, aktarımın kendisi çalışır.
+            capture_ports: vec![443, 80],
             split_delay: Duration::from_millis(12),
             // TCP el sıkışması bir gidiş-dönüşte biter; kıtalar arası bir
             // hatta bile yarım saniye. Bunu aşan bekleme, yanıt gelmeyeceği
@@ -125,11 +129,14 @@ pub struct StatsSnapshot {
 #[derive(Debug)]
 struct Running {
     listener_addr: SocketAddr,
+    /// IPv6 dinleyicisinin adresi; IPv6 kapalıysa `None`.
+    listener6_addr: Option<SocketAddr>,
     /// Kuralların hâlâ yerinde olduğunu doğrulamak için tutulur.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     rules: RedirectRules,
     shutdown: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
+    worker6: Option<thread::JoinHandle<()>>,
 }
 
 /// Sistem geneli koruma motoru.
@@ -274,10 +281,21 @@ impl Backend for TransparentEngine {
             .local_addr()
             .map_err(|e| BackendError::ApplyFailed(e.to_string()))?;
 
+        // IPv6 dinleyicisi. Açılamazsa (çekirdekte IPv6 kapalı olabilir)
+        // IPv6 kuralı da kurulmaz ve o trafiğe dokunulmaz.
+        let listener6 = TcpListener::bind(("::1", listener_addr.port())).ok();
+        let listener6_addr = listener6.as_ref().and_then(|l| l.local_addr().ok());
+
         let mut rules =
             RedirectRules::new(&snapshot.session, listener_addr.port(), Self::engine_uid());
         rules.ports = self.config.capture_ports.clone();
         rules.quic_block = profile.protocols.quic == QuicMode::Block;
+        // IPv6'yı ancak taşıyabildiğimizi **sınayıp** doğruladıktan sonra
+        // açıyoruz; sınama başarısızsa IPv6 korumasız ama çalışır kalır.
+        rules.ipv6 = match (&listener6, listener6_addr) {
+            (Some(l), Some(a)) => ipv6_sinamasi(&snapshot.session, l, a),
+            _ => false,
+        };
 
         install_rules(&rules)?;
         // Kural kurulduğu anda temizlik listesine girer; bir sonraki adım
@@ -311,11 +329,42 @@ impl Backend for TransparentEngine {
             })
         };
 
+        // IPv6 dinleyicisi ayrı bir döngüde; kural kurulmadıysa dinleyici de
+        // kapatılıyor, boşuna açık kalmasın.
+        let worker6 = match (listener6, rules.ipv6) {
+            (Some(l6), true) => {
+                let shutdown = Arc::clone(&shutdown);
+                let counters = Arc::clone(&self.counters);
+                let fragmentation = profile.strategy.fragmentation;
+                let config = self.config.clone();
+                let adres6 = listener6_addr.unwrap_or(listener_addr);
+                Some(thread::spawn(move || {
+                    for incoming in l6.incoming() {
+                        if shutdown.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let Ok(client) = incoming else { continue };
+                        let counters = Arc::clone(&counters);
+                        let config = config.clone();
+                        counters.accepted.fetch_add(1, Ordering::Relaxed);
+                        thread::spawn(move || {
+                            if handle(client, adres6, fragmentation, &config, &counters).is_err() {
+                                counters.failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                        });
+                    }
+                }))
+            }
+            _ => None,
+        };
+
         *slot = Some(Running {
             listener_addr,
+            listener6_addr,
             rules,
             shutdown,
             worker: Some(worker),
+            worker6,
         });
         Ok(())
     }
@@ -390,8 +439,16 @@ impl Backend for TransparentEngine {
 
         if let Some(mut running) = slot.take() {
             running.shutdown.store(true, Ordering::SeqCst);
+            // Her iki döngü de `accept` üzerinde bekliyor; bir bağlantı
+            // gönderip uyandırıyoruz ki kapanış bayrağını görsünler.
             let _ = TcpStream::connect_timeout(&running.listener_addr, Duration::from_millis(500));
+            if let Some(a6) = running.listener6_addr {
+                let _ = TcpStream::connect_timeout(&a6, Duration::from_millis(500));
+            }
             if let Some(w) = running.worker.take() {
+                let _ = w.join();
+            }
+            if let Some(w) = running.worker6.take() {
                 let _ = w.join();
             }
         }
@@ -401,6 +458,49 @@ impl Backend for TransparentEngine {
             None => Ok(()),
         }
     }
+}
+
+/// IPv6 için özgün hedefin okunabildiğini sınar.
+///
+/// Neden gerekli: `redirect` kuralı IPv6'yı da yakalayabilir ama biz hedefi
+/// okuyamazsak bağlantıyı iletemeyiz ve trafik tamamen kesilir. Bu yüzden
+/// kuralı kurmadan önce gerçek bir bağlantıyla deniyoruz.
+///
+/// Sınama loopback üzerinde yapılıyor; ölçülen şey çekirdeğin NAT öncesi
+/// hedefi verip vermediği, o da adresin küresel olup olmamasına bakmıyor.
+/// Böylece IPv6 bağlantısı olmayan makinede bile mekanizma doğrulanabiliyor.
+#[cfg(target_os = "linux")]
+fn ipv6_sinamasi(session: &SessionId, listener: &TcpListener, adres: SocketAddr) -> bool {
+    /// Sınama için kullanılan kapı. Gerçek bir servise denk gelmesin diye
+    /// artık kullanılmayan bir numara seçildi.
+    const SINAMA_KAPISI: u16 = 9;
+
+    let tablo = session.object_name("deneme");
+    for cmd in RedirectRules::selftest_commands(&tablo, adres.port(), SINAMA_KAPISI) {
+        if nft::run(&cmd).is_err() {
+            let _ = nft::run(&RedirectRules::selftest_cleanup(&tablo));
+            return false;
+        }
+    }
+
+    let sonuc = (|| -> Option<bool> {
+        let hedef: SocketAddr = format!("[::1]:{SINAMA_KAPISI}").parse().ok()?;
+        let istemci = TcpStream::connect_timeout(&hedef, Duration::from_millis(500)).ok()?;
+        let (s, _) = listener.accept().ok()?;
+        let d = origdst::original_destination(&s).ok()?;
+        drop(istemci);
+        // Bağlantı kuruldu **ve** özgün hedefi geri alabildik.
+        Some(d.port() == SINAMA_KAPISI && d.ip().is_loopback())
+    })()
+    .unwrap_or(false);
+
+    let _ = nft::run(&RedirectRules::selftest_cleanup(&tablo));
+    sonuc
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ipv6_sinamasi(_session: &SessionId, _listener: &TcpListener, _adres: SocketAddr) -> bool {
+    false
 }
 
 #[cfg(target_os = "linux")]

@@ -47,6 +47,14 @@ Seçenekler için:  trdpi --yardim"
     if args.iter().any(|a| a == "--yardim" || a == "-h") {
         return yardim();
     }
+    // Bekçi: motorun kendisi tarafından başlatılır, kullanıcı çağırmaz.
+    // Motor düzgün kapanamazsa (kill -9, bellek yetersizliği, panik)
+    // yönlendirme kuralları geride kalır ve **bütün HTTPS kesilir** —
+    // ölçüldü: kural dururken dinleyen yoksa istek 13 ms'de reddediliyor.
+    // Bekçi bunu önlüyor.
+    if let Some(i) = args.iter().position(|a| a == "--bekci") {
+        return bekci(&args[i + 1..]);
+    }
     if args.iter().any(|a| a == "--durdur") {
         return durdur();
     }
@@ -168,6 +176,18 @@ Seçenekler için:  trdpi --yardim"
     // Koruma gerçekten kurulduktan sonra: arayüz buna bakıyor.
     instance::write_pidfile();
 
+    // Gözcüyü başlat. Bu noktadan sonra motor nasıl ölürse ölsün
+    // yönlendirme kuralları geride kalmaz.
+    let mut tablolar = snapshot.owned_objects.clone();
+    if let Some(q) = &quic_snapshot {
+        tablolar.extend(q.owned_objects.iter().cloned());
+    }
+    let mut gozcu = bekci_baslat(&tablolar);
+    if gozcu.is_none() {
+        eprintln!("Uyarı: gözcü başlatılamadı. Motor beklenmedik şekilde");
+        eprintln!("kapanırsa kurtarma için:  sudo trdpi --geri");
+    }
+
     println!();
     println!("Koruma aktif. Tüm uygulamalar kapsam içinde.");
     println!("Discord, Sober ve diğerlerinde ayar yapman gerekmiyor.");
@@ -227,6 +247,11 @@ Seçenekler için:  trdpi --yardim"
     }
 
     println!("Geri alınıyor...");
+    // Gözcü artık gereksiz; temizliği biz yapıyoruz.
+    if let Some(mut g) = gozcu.take() {
+        let _ = g.kill();
+        let _ = g.wait();
+    }
     instance::clear_pidfile();
     // Sıra önemli: önce yönlendirme, sonra adres ayarı. Yönlendirme
     // kalkmadan çözümleyiciyi değiştirirsek arada bir an yanlış adrese
@@ -339,6 +364,60 @@ fn geri_al() {
 
     dns_geri_al();
     println!("Temiz.");
+}
+
+/// Gözcü sürecini başlatır.
+///
+/// Kendi ikilimizi çağırıyoruz; yolu `/proc/self/exe` üzerinden alıyoruz ki
+/// nereye kurulu olduğundan bağımsız çalışsın.
+fn bekci_baslat(tablolar: &[String]) -> Option<std::process::Child> {
+    if tablolar.is_empty() {
+        return None;
+    }
+    let kendim = std::fs::read_link("/proc/self/exe").ok()?;
+    std::process::Command::new(kendim)
+        .arg("--bekci")
+        .arg(std::process::id().to_string())
+        .args(tablolar)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+/// Motor ölürse kuralları kaldıran gözcü.
+///
+/// Ayrı bir süreç olmak zorunda: motorun kendi içindeki hiçbir kod `kill -9`
+/// ya da bellek yetersizliği durumunda çalışmaz. Bu süreç yalnızca bekler ve
+/// ana süreç kaybolunca **kendisine verilen tabloları** siler — başka
+/// tablolara dokunmaz ki ikinci bir kopya çalışıyorsa onu bozmasın.
+///
+/// Düzgün kapanışta motor bekçiyi kendisi sonlandırır; o yüzden buraya
+/// düşülmesi zaten bir arıza demektir.
+fn bekci(args: &[String]) -> () {
+    let Some(ana) = args.first().and_then(|s| s.parse::<u32>().ok()) else {
+        return;
+    };
+    let tablolar: Vec<String> = args[1..].to_vec();
+
+    while std::path::Path::new(&format!("/proc/{ana}")).exists() {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Düzgün kapanış da bu noktaya varır; motora temizliğini bitirmesi için
+    // kısa bir süre tanıyoruz ki aynı işi iki kez yapmayalım.
+    std::thread::sleep(Duration::from_millis(400));
+
+    for t in &tablolar {
+        let cmd: Vec<String> = ["delete", "table", "inet", t]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let _ = trdpi_transparent::nft::run(&cmd);
+    }
+    temiz_kimlik_dosyasi();
+    dns_geri_al();
 }
 
 /// QUIC motorunun ne iş yaptığının tek satırlık özeti.
@@ -536,7 +615,7 @@ fn yardim() {
 }
 
 /// Tanıdığımız bütün seçenekler.
-const SECENEKLER: [&str; 9] = [
+const SECENEKLER: [&str; 10] = [
     "--yardim",
     "-h",
     "--surum",
@@ -546,6 +625,7 @@ const SECENEKLER: [&str; 9] = [
     "--geri",
     "--quic-gecir",
     "--sure",
+    "--bekci",
 ];
 
 /// Listede olmayan ilk argümanı döndürür.
@@ -559,6 +639,10 @@ fn bilinmeyen_secenek(args: &[String]) -> Option<&str> {
         if a == "--sure" {
             i += 2; // seçeneğin kendisi ve değeri
             continue;
+        }
+        // Bekçinin kalan argümanları pid ve tablo adları; onları denetlemiyoruz.
+        if a == "--bekci" {
+            return None;
         }
         if !SECENEKLER.contains(&a) {
             return Some(a);
