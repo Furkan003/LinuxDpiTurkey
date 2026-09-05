@@ -159,3 +159,66 @@ mod tests {
         assert_eq!(PROCESS_NAME, "trdpi");
     }
 }
+
+/// Motorun yazdığı durum dosyasından okunan özet.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Durum {
+    /// Kabul edilen bağlantı sayısı.
+    pub baglanti: u64,
+    /// Kurulan bağlantı sayısı.
+    pub kurulan: u64,
+    /// Engeli aşılan QUIC bağlantısı sayısı.
+    pub quic_asilan: u64,
+    /// O an kullanılan teknik.
+    pub teknik: String,
+    /// Adres çözümlemenin nasıl yapıldığı.
+    pub dns: String,
+}
+
+/// Motorun anlık durumunu okur; motor çalışmıyorsa `None`.
+///
+/// Arayüz motorla doğrudan konuşmuyor: motor iki saniyede bir küçük bir
+/// dosya yazıyor, biz de onu okuyoruz. Bu yüzden burada ağ ya da süreç
+/// erişimi yok, yalnızca bir dosya okuması var.
+pub fn durum() -> Option<Durum> {
+    use trdpi_core::paths::{status_field, STATUS_FILE};
+
+    let icerik = std::fs::read_to_string(STATUS_FILE).ok()?;
+    let sayi = |k: &str| {
+        status_field(&icerik, k)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    Some(Durum {
+        baglanti: sayi("baglanti"),
+        kurulan: sayi("kurulan"),
+        quic_asilan: sayi("quic_asilan"),
+        teknik: status_field(&icerik, "teknik").unwrap_or("-").to_string(),
+        dns: status_field(&icerik, "dns").unwrap_or("-").to_string(),
+    })
+}
+
+/// Açılışta başlatma açık mı?
+pub fn acilista_acik() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-enabled", "trdpi.service"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+        .unwrap_or(false)
+}
+
+/// Açılışta başlatmayı açar ya da kapatır.
+///
+/// Yetki gerektiği için motorun kendi komutunu `pkexec` ile çağırıyoruz;
+/// arayüzün ayrı bir yetki yolu olmasın.
+pub fn acilista_ayarla(ac: bool) -> std::io::Result<()> {
+    Command::new("pkexec")
+        .arg(engine_path())
+        .arg(if ac {
+            "--acilista-ac"
+        } else {
+            "--acilista-kapat"
+        })
+        .status()
+        .map(|_| ())
+}

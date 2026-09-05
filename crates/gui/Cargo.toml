@@ -11,6 +11,8 @@ name = "trdpi-arayuz"
 path = "src/main.rs"
 
 [dependencies]
+# Yalnızca durum dosyasının biçimi için; ağ ya da I/O getirmiyor.
+trdpi-core = { path = "../core" }
 # Web motoru ve OpenGL yok. Aynı pencereyi OpenGL ile de ölçtük:
 # 115 MB yerine 16 MB, 7.3 MB yerine 1.1 MB dosya.
 fltk = "1.5"

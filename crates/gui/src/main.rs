@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use fltk::{
     app,
-    button::Button,
+    button::{Button, CheckButton},
     enums::{Align, Color, FrameType},
     frame::Frame,
     prelude::*,
@@ -105,6 +105,8 @@ struct Uygulama {
     baslik: Frame,
     aciklama: Frame,
     dugme: Button,
+    /// Motor çalışırken sayaçları gösteren satır.
+    ozet: Frame,
     alt_bilgi: Frame,
     guncelleme: Arc<Mutex<Option<update::UpdateStatus>>>,
 }
@@ -134,6 +136,19 @@ impl Uygulama {
             self.alt_bilgi
                 .set_label_color(Color::from_rgb(230, 180, 80));
         }
+
+        // Canlı özet: yalnızca motor çalışırken anlamlı.
+        let metin = match engine::durum() {
+            Some(d) if self.durum == Durum::Acik => format!(
+                "bağlantı {} · kurulan {} · QUIC engeli aşılan {}
+yöntem: {}
+adres çözümleme: {}",
+                d.baglanti, d.kurulan, d.quic_asilan, d.teknik, d.dns
+            ),
+            _ => String::new(),
+        };
+        self.ozet.set_label(&metin);
+        self.ozet.redraw();
 
         self.isik.redraw();
         self.baslik.redraw();
@@ -204,33 +219,44 @@ fn main() {
     app::background(24, 26, 30);
     app::foreground(230, 232, 235);
 
-    let mut pencere = Window::new(100, 100, 380, 300, "TR-DPI");
+    let mut pencere = Window::new(100, 100, 420, 380, "TR-DPI");
     pencere.set_color(Color::from_rgb(24, 26, 30));
 
     // Durum ışığı: yuvarlak, dolu.
-    let mut isik = Frame::new(181, 30, 18, 18, "");
+    let mut isik = Frame::new(201, 30, 18, 18, "");
     isik.set_frame(FrameType::OFlatBox);
 
-    let mut baslik = Frame::new(0, 60, 380, 32, "");
+    let mut baslik = Frame::new(0, 60, 420, 32, "");
     baslik.set_label_size(20);
     baslik.set_align(Align::Center | Align::Inside);
 
-    let mut aciklama = Frame::new(0, 94, 380, 22, "");
+    let mut aciklama = Frame::new(0, 94, 420, 22, "");
     aciklama.set_label_size(12);
     aciklama.set_label_color(Color::from_rgb(160, 162, 168));
     aciklama.set_align(Align::Center | Align::Inside);
 
-    let mut dugme = Button::new(90, 150, 200, 52, "");
+    let mut dugme = Button::new(110, 150, 200, 52, "");
     dugme.set_label_size(16);
     dugme.set_color(Color::from_rgb(45, 48, 55));
     dugme.set_selection_color(Color::from_rgb(60, 64, 72));
     dugme.set_label_color(Color::from_rgb(235, 237, 240));
     dugme.set_frame(FrameType::FlatBox);
 
+    // Motor çalışırken doldurulan canlı özet.
+    let mut ozet = Frame::new(0, 210, 420, 54, "");
+    ozet.set_label_size(11);
+    ozet.set_label_color(Color::from_rgb(150, 152, 158));
+    ozet.set_align(Align::Center | Align::Inside);
+
+    let mut acilista = CheckButton::new(100, 272, 240, 22, " Açılışta kendiliğinden başlat");
+    acilista.set_label_size(12);
+    acilista.set_label_color(Color::from_rgb(180, 182, 188));
+    acilista.set_value(engine::acilista_acik());
+
     let mut alt_bilgi = Frame::new(
         0,
-        262,
-        380,
+        342,
+        420,
         20,
         "Oyunların gerçek zamanlı bağlantısı kapsam dışı",
     );
@@ -268,6 +294,7 @@ fn main() {
         baslik,
         aciklama,
         dugme: dugme.clone(),
+        ozet,
         alt_bilgi,
         guncelleme,
     }));
@@ -276,6 +303,19 @@ fn main() {
     {
         let d = Rc::clone(&durum);
         dugme.set_callback(move |_| d.borrow_mut().dugmeye_basildi());
+    }
+
+    {
+        // Açılışta başlatma yetki istiyor; kullanıcı vazgeçerse kutuyu eski
+        // haline döndürüyoruz ki ekran yalan söylemesin.
+        acilista.set_callback(move |k| {
+            let istenen = k.value();
+            if engine::acilista_ayarla(istenen).is_err() {
+                k.set_value(!istenen);
+                return;
+            }
+            k.set_value(engine::acilista_acik());
+        });
     }
 
     // Durumu düzenli aralıklarla gerçekle eşitle.

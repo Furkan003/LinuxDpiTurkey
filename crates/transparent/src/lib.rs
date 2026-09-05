@@ -146,6 +146,25 @@ struct Running {
     worker6: Option<thread::JoinHandle<()>>,
 }
 
+/// Bağlantı başına açılan iş parçacığının yığın boyutu.
+///
+/// Rust'ın varsayılanı 2 MiB. Bu yol sığ çalışıyor — okuma, bağlanma,
+/// aktarma — ve tamponlar öbekte. 40 eş zamanlı bağlantıda varsayılan
+/// 174 MB sanal bellek demekti; gerçek kullanım küçük olsa da bu sayı
+/// kısıtlı sistemlerde ve izleme araçlarında sorun çıkarıyor.
+const YIGIN: usize = 128 * 1024;
+
+/// Küçük yığınlı iş parçacığı açar.
+///
+/// Yığın ayrılamazsa (bellek baskısı) bağlantı düşürülüyor; olağan
+/// `spawn` gibi panik yapmıyor.
+fn parcacik<F>(is: F) -> std::io::Result<thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    thread::Builder::new().stack_size(YIGIN).spawn(is)
+}
+
 /// Parçalama kipini atomik bir sayıya sığdırır.
 ///
 /// Kip çalışma anında değişebilmeli: bir operatörde işe yaramayan teknik
@@ -379,9 +398,8 @@ impl Backend for TransparentEngine {
                     // devreye girsin, motoru yeniden kurmak gerekmesin.
                     let kip = kip_coz(fragmentation.load(Ordering::Relaxed));
 
-                    thread::spawn(move || {
-                        if handle(client, listener_addr, kip, &config, &counters).is_err()
-                        {
+                    let _ = parcacik(move || {
+                        if handle(client, listener_addr, kip, &config, &counters).is_err() {
                             counters.failed.fetch_add(1, Ordering::Relaxed);
                         }
                     });
@@ -408,7 +426,7 @@ impl Backend for TransparentEngine {
                         let config = config.clone();
                         counters.accepted.fetch_add(1, Ordering::Relaxed);
                         let kip = kip_coz(fragmentation.load(Ordering::Relaxed));
-                        thread::spawn(move || {
+                        let _ = parcacik(move || {
                             if handle(client, adres6, kip, &config, &counters).is_err() {
                                 counters.failed.fetch_add(1, Ordering::Relaxed);
                             }
@@ -783,6 +801,9 @@ fn handle(
         return Ok(());
     }
     first.truncate(n);
+    // `truncate` ayırmayı küçültmüyor; ClientHello genelde bir kilobaytın
+    // altında ve bu tampon bağlantı boyunca yaşıyor. Fazlasını bırakıyoruz.
+    first.shrink_to_fit();
 
     let (upstream, ilk_yanit) =
         match connect_with_retry(target, &first, fragmentation, config, counters) {
@@ -816,12 +837,12 @@ fn handle(
     // yeniden deneme yapılamaz.
     client_write.write_all(&ilk_yanit)?;
 
-    let down = thread::spawn(move || {
+    let down = parcacik(move || {
         let mut from = upstream;
         let mut to = client_write;
         let _ = io::copy(&mut from, &mut to);
         let _ = to.shutdown(Shutdown::Write);
-    });
+    })?;
 
     let _ = io::copy(&mut client_read, &mut upstream_write);
     let _ = upstream_write.shutdown(Shutdown::Write);

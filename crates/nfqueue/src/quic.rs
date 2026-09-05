@@ -215,7 +215,7 @@ fn build_valid_fake(real: &[u8], ttl: u8, sni: &str, seed: u64) -> Option<Vec<u8
         return None;
     }
 
-    let yuk = crate::quic_initial::sahte_initial(sni, seed);
+    let yuk = trdpi_core::quic_initial::sahte_initial(sni, seed);
     let toplam = ip + 8 + yuk.len();
     if toplam > u16::MAX as usize {
         return None;

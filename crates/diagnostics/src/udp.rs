@@ -14,7 +14,7 @@
 //! kullanıyor; hiçbir yere veri yollanmıyor, yalnızca yanıt gelip gelmediğine
 //! bakılıyor.
 
-use std::net::{ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
 use trdpi_core::{Classification, DiagnosticKind, DiagnosticResult};
@@ -290,5 +290,93 @@ mod tests {
         let b: [u8; 12] = token();
         assert_ne!(a, b);
         assert!(a.iter().any(|&x| x != 0));
+    }
+}
+
+/// Ada göre QUIC engelinin ölçüm sonucu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicAdSonucu {
+    /// Hem masum hem engelli adla el sıkışma başlıyor: ada göre engel yok.
+    Engelsiz,
+    /// Masum adla başlıyor, engelli adla başlamıyor. Denetim Initial'ı çözüp
+    /// sunucu adını okuyor demektir.
+    AdaGoreEngelli,
+    /// Masum adla da yanıt gelmedi; sorun QUIC'in kendisinde ya da hedefte.
+    /// Bu durumda ada göre engel olup olmadığı **bilinemiyor**.
+    Olculemedi,
+}
+
+/// Doğrulamada kullanılan, engellenmediği varsayılan ad.
+const MASUM: &str = "www.google.com";
+
+/// Verilen sunucu adıyla QUIC el sıkışması başlatılabiliyor mu?
+///
+/// Geçerli bir Initial gönderip **herhangi bir** yanıt bekliyoruz. Sunucu
+/// ServerHello, Retry ya da sürüm pazarlığı dönebilir; hepsi paketin karşıya
+/// ulaştığını kanıtlar. El sıkışmayı tamamlamıyoruz, gerek yok.
+pub fn quic_sni_ulasiyor(hedef: SocketAddr, sni: &str, timeout: Duration) -> bool {
+    let tohum = u64::from_be_bytes(token::<8>());
+    let paket = trdpi_core::quic_initial::sahte_initial(sni, tohum);
+
+    let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else {
+        return false;
+    };
+    if sock.set_read_timeout(Some(timeout)).is_err() || sock.send_to(&paket, hedef).is_err() {
+        return false;
+    }
+    let mut yanit = [0u8; 2048];
+    sock.recv_from(&mut yanit).is_ok()
+}
+
+/// QUIC engelinin **ada göre** olup olmadığını ölçer.
+///
+/// Aynı adrese aynı porttan iki Initial gönderiliyor; tek değişken sunucu
+/// adı. Böylece "QUIC kapalı" ile "bu ad engelli" ayrımı yapılabiliyor —
+/// yolun genel açıklığına bakan ölçüm bunu göremiyordu.
+pub fn quic_ada_gore_engelli(
+    hedef: SocketAddr,
+    sni: &str,
+    timeout: Duration,
+) -> QuicAdSonucu {
+    // Önce kontrol: masum adla ulaşılamıyorsa karşılaştıracak bir şey yok.
+    if !quic_sni_ulasiyor(hedef, MASUM, timeout) {
+        return QuicAdSonucu::Olculemedi;
+    }
+    if quic_sni_ulasiyor(hedef, sni, timeout) {
+        QuicAdSonucu::Engelsiz
+    } else {
+        QuicAdSonucu::AdaGoreEngelli
+    }
+}
+
+#[cfg(test)]
+mod ad_testleri {
+    use super::*;
+
+    #[test]
+    fn urettigimiz_paket_gecerli_initial() {
+        let p = trdpi_core::quic_initial::sahte_initial("ornek.com", 1);
+        assert!(p.len() >= 1200);
+        assert_eq!(p[0] & 0xF0, 0xC0);
+        assert_eq!(&p[1..5], &[0x00, 0x00, 0x00, 0x01]);
+    }
+
+    /// Yanıt vermeyen bir adres zaman aşımına uğramalı, asılı kalmamalı.
+    #[test]
+    fn yanitsiz_adres_zaman_asimina_ugruyor() {
+        let hedef: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let basladi = Instant::now();
+        assert!(!quic_sni_ulasiyor(hedef, "ornek.com", Duration::from_millis(300)));
+        assert!(basladi.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Kontrol başarısızsa sonuç "ölçülemedi" olmalı; yanlış suçlama yapmıyoruz.
+    #[test]
+    fn kontrol_tutmazsa_olculemedi() {
+        let hedef: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        assert_eq!(
+            quic_ada_gore_engelli(hedef, "ornek.com", Duration::from_millis(200)),
+            QuicAdSonucu::Olculemedi
+        );
     }
 }

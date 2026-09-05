@@ -219,6 +219,51 @@ Döngüyü önlemek için kendi trafiğimizi kural dışı bırakmamız gerekiyo
 
 Artık yalnızca **bizim açtığımız soketler** muaf: giden bağlantıya bir işaret konuyor ve kural o işareti muaf tutuyor. Ölçüldü: root olarak yapılan üç istek sayacı 0'dan 3'e çıkardı, yani artık motordan geçiyorlar.
 
+## Açılışta başlatma — isteğe bağlı
+
+Paket bir systemd servisi kuruyor ama **etkinleştirmiyor.** Koruma sistem geneli değişiklik yapıyor ve bunun senin kararın olması gerekiyor.
+
+```bash
+trdpi --acilista              # durum
+sudo trdpi --acilista-ac      # açılışta başlasın
+sudo trdpi --acilista-kapat   # başlamasın
+```
+
+Arayüzde de bir anahtar var. Servis çökerse üç denemede vazgeçiyor: koruma kapalı kalması internetin kesilmesinden iyidir.
+
+## Bir site açılmıyorsa
+
+```bash
+trdpi --dene discord.com
+```
+
+O siteye özel cevap veriyor — yönetici yetkisi istemeden:
+
+```
+  Adres çözümleme   yanlış adres veriliyor
+  Bağlantı          yanıt gelmiyor
+  Güvenli aşama     ölçülemedi
+  QUIC              site adına göre engelli
+```
+
+Adres çözümleme bozuksa gerçek adresi çalışan bir kaynaktan alıp QUIC'i ona göre ölçüyor; yoksa sinkhole'a ölçüm yapmış olurduk.
+
+## Hattını raporlamak
+
+```bash
+trdpi --rapor
+```
+
+Bu hattın neyi nasıl engellediğini çıkarıyor: hangi adres kaynakları çalışıyor, hangi kapılar açık, hangi siteler nasıl engelli. **Telemetri yok** — çıktı ekranda kalıyor, paylaşmak sana kalmış.
+
+Başka bir operatörde çalıştırıp karşılaştırmak için var. Ölçemediğimiz tek şey ikinci bir hattı görmekti.
+
+## Bellek
+
+Ölçüldü: **boşta 0.8 MB, 40 eş zamanlı bağlantıda 2.2 MB.** Bağlantı biter bitmez geri iniyor.
+
+İş parçacığı yığınları 2 MiB'den 128 KiB'e indirildi; bu yol sığ çalışıyor ve tamponlar öbekte. Sanal bellek 174 MB'den 7 MB'ye düştü. ClientHello tamponu da okunan boyuta küçültülüyor — bağlantı boyunca 16 KB boşuna durmuyor.
+
 ## Motor çökerse
 
 Yönlendirme kuralı dururken dinleyen bir motor yoksa **bütün HTTPS kesilir** — ölçüldü, istek 13 ms'de reddediliyor. Bu yüzden motor açılırken yanında küçük bir gözcü süreç başlatıyor. Motor nasıl ölürse ölsün (`kill -9`, bellek yetersizliği, panik) gözcü kuralları kaldırıyor ve adres ayarını geri getiriyor.
@@ -256,7 +301,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 337 test
+cargo test                                   # 345 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -296,6 +341,10 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] systemd-resolved olmayan dağıtımlar için adres çevirme
 - [x] Şifreli adres çözümleme (DNS-over-TLS)
 - [x] Geçerli sahte QUIC Initial (kütüphanesiz kripto)
+- [x] İsteğe bağlı açılışta başlatma
+- [x] Tek site teşhisi (`--dene`) ve hat raporu (`--rapor`)
+- [x] Arayüzde canlı durum
+- [x] Çalışan tekniği hatırlama
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm

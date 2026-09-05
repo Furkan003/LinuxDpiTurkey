@@ -43,6 +43,8 @@ install -Dm644 "$KOK/packaging/trdpi.svg" \
   "$STAGE/usr/share/icons/hicolor/scalable/apps/trdpi.svg"
 install -Dm644 "$KOK/packaging/tr.trdpi.policy" \
   "$STAGE/usr/share/polkit-1/actions/tr.trdpi.policy"
+install -Dm644 "$KOK/packaging/trdpi.service" \
+  "$STAGE/usr/lib/systemd/system/trdpi.service"
 install -Dm644 "$KOK/LICENSE" \
   "$STAGE/usr/share/doc/trdpi/copyright"
 
@@ -75,6 +77,10 @@ cat > "$STAGE/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
 # Koruma çalışıyorsa durdur ve ağ ayarlarını eski haline getir.
+# Açılışta başlatma açıksa kapat, sonra ağ ayarlarını geri al.
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now trdpi.service >/dev/null 2>&1 || true
+fi
 if [ -x /usr/bin/trdpi ]; then
     /usr/bin/trdpi --geri >/dev/null 2>&1 || true
 fi

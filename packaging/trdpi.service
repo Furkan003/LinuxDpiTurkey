@@ -1,0 +1,33 @@
+# TR-DPI korumasını açılışta başlatan servis.
+#
+# Paketle birlikte kurulur ama **etkinleştirilmez**. Açmak için:
+#     sudo trdpi --acilista-ac
+# Kapatmak için:
+#     sudo trdpi --acilista-kapat
+#
+# Bilerek isteğe bağlı: koruma sistem geneli değişiklik yapıyor ve bunun
+# kullanıcının kararı olması gerekiyor.
+
+[Unit]
+Description=TR-DPI koruma
+Documentation=https://github.com/Furkan003/LinuxDpiTurkey
+After=network-online.target systemd-resolved.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trdpi
+# Servis nasıl biterse bitsin sistemi eski haline döndür. Motorun kendi
+# temizliği ve gözcü süreç zaten var; bu üçüncü güvence.
+ExecStopPost=/usr/bin/trdpi --geri
+
+# Çökerse kaldır, ama sonsuz döngüye girme: üç denemede toparlanamıyorsa
+# sorun geçici değildir ve koruma kapalı kalması internetin kesilmesinden
+# iyidir.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target

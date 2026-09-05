@@ -55,6 +55,24 @@ Seçenekler için:  trdpi --yardim"
     if let Some(i) = args.iter().position(|a| a == "--bekci") {
         return bekci(&args[i + 1..]);
     }
+    if let Some(i) = args.iter().position(|a| a == "--dene") {
+        return match args.get(i + 1) {
+            Some(site) if !site.starts_with("--") => dene(site),
+            _ => bitir("--dene bir site adı bekliyor.  Örnek:  trdpi --dene discord.com"),
+        };
+    }
+    if args.iter().any(|a| a == "--rapor") {
+        return rapor();
+    }
+    if args.iter().any(|a| a == "--acilista-ac") {
+        return acilista(true);
+    }
+    if args.iter().any(|a| a == "--acilista-kapat") {
+        return acilista(false);
+    }
+    if args.iter().any(|a| a == "--acilista") {
+        return acilista_durum();
+    }
     if args.iter().any(|a| a == "--durdur") {
         return durdur();
     }
@@ -113,11 +131,21 @@ Seçenekler için:  trdpi --yardim"
     // 2. Adres çözümlemesi bozuksa önce onu düzelt; yanlış adrese
     //    bağlanılırken başka hiçbir yöntem işe yaramaz.
     let mut dns_cevirme = None;
+    // Arayüzde tek satıra sığması gerekiyor; uzun etiket terminale gidiyor,
+    // buraya kısası yazılıyor.
+    let mut dns_kaynagi = String::from("dokunulmadı");
     if parmak_izi.dns_tampering {
         println!();
         println!("Adres çözümlemesi düzeltiliyor...");
         match dns_duzelt() {
-            Ok(kaynak) => println!("  {kaynak} kullanılacak."),
+            Ok(kaynak) => {
+                println!("  {kaynak} kullanılacak.");
+                dns_kaynagi = if kaynak.contains("şifreli") {
+                    "şifreli".into()
+                } else {
+                    "standart dışı kapı".into()
+                };
+            }
             Err(mesaj) => {
                 // Sistemin aracıyla değiştiremedik. Yedek yol: giden adres
                 // sorularını doğrudan çalışan sunucuya çeviriyoruz. Hangi
@@ -127,6 +155,7 @@ Seçenekler için:  trdpi --yardim"
                 match dns_kaynagi_bul() {
                     Some((adres, ad)) => {
                         dns_cevirme = Some(adres);
+                        dns_kaynagi = "kuralla çevriliyor".into();
                         println!("  Adres soruları {ad} sunucusuna çevrilecek.");
                     }
                     None => println!("  Bu adımsız devam ediliyor."),
@@ -225,9 +254,18 @@ Seçenekler için:  trdpi --yardim"
     let basladi = std::time::Instant::now();
     let mut son = std::time::Instant::now();
     let mut denetim = std::time::Instant::now();
-    let mut basamak = 0usize;
+    // Geçen sefer hangi basamakta kaldıysak oradan başlıyoruz: sorunlu
+    // hatlarda ilk bağlantılar da açılsın. Hat düzelmişse aşağı iniyoruz.
+    let mut basamak = basamak_oku();
+    if basamak > 0 {
+        if let Basamak::Parcalama(kip) = MERDIVEN[basamak] {
+            engine.set_fragmentation(kip);
+        }
+        println!("Önceki ölçüme göre başlangıç tekniği: {}", basamak_adi(basamak));
+    }
     let mut onceki = (0u64, 0u64); // (bağlantı, kurulan)
     let mut tavan_soylendi = false;
+    let mut durum_yazma = std::time::Instant::now() - Duration::from_secs(10);
 
     while !dur.load(Ordering::SeqCst) {
         if sure.is_some_and(|s| basladi.elapsed() >= s) {
@@ -246,6 +284,18 @@ Seçenekler için:  trdpi --yardim"
                 s.established.saturating_sub(onceki.1),
             );
             onceki = (s.accepted, s.established);
+            // Hat düzeldiyse bir basamak geri in: gereksiz müdahale
+            // sürdürmeyelim. Yukarı çıkmaktan daha yavaş iniyoruz ki
+            // gidip gelme olmasın.
+            if basamak > 0 && yeni.0 >= 6 && !yukseltmeli_mi(yeni.0, yeni.1) {
+                basamak -= 1;
+                if let Basamak::Parcalama(kip) = MERDIVEN[basamak] {
+                    engine.set_fragmentation(kip);
+                }
+                basamak_yaz(basamak);
+                println!();
+                println!("Bağlantılar düzeldi; daha az müdahaleye dönülüyor: {}", basamak_adi(basamak));
+            }
             if yukseltmeli_mi(yeni.0, yeni.1) {
                 if basamak + 1 < MERDIVEN.len() {
                     basamak += 1;
@@ -268,6 +318,7 @@ Seçenekler için:  trdpi --yardim"
                     } else {
                         println!("{} denenemedi; atlanıyor.", basamak_adi(basamak));
                     }
+                    basamak_yaz(basamak);
                 } else if !tavan_soylendi {
                     tavan_soylendi = true;
                     println!();
@@ -276,6 +327,11 @@ Seçenekler için:  trdpi --yardim"
                 }
             }
             denetim = std::time::Instant::now();
+        }
+
+        if durum_yazma.elapsed() >= Duration::from_secs(2) {
+            durum_yaz(&engine, &nfq, basamak, quic_snapshot.is_some(), &dns_kaynagi);
+            durum_yazma = std::time::Instant::now();
         }
 
         if son.elapsed() >= Duration::from_secs(20) {
@@ -309,6 +365,7 @@ Seçenekler için:  trdpi --yardim"
         println!("Hiçbir trafik motora uğramadı; yönlendirme çalışmamış olabilir.");
     }
 
+    let _ = std::fs::remove_file(trdpi_core::paths::STATUS_FILE);
     println!("Geri alınıyor...");
     // Gözcü artık gereksiz; temizliği biz yapıyoruz.
     if let Some(mut g) = gozcu.take() {
@@ -451,7 +508,343 @@ fn geri_al() {
     }
 
     dns_geri_al();
+    // Öğrenilen teknik de sıfırlanıyor: kullanıcı "her şeyi geri al" dedi.
+    let _ = std::fs::remove_file(TEKNIK_DOSYASI);
+    let _ = std::fs::remove_file(trdpi_core::paths::STATUS_FILE);
     println!("Temiz.");
+}
+
+/// Öğrenilen tekniğin saklandığı yer.
+const TEKNIK_DOSYASI: &str = "/var/lib/trdpi/teknik";
+
+/// Son turda kalınan basamağı okur.
+///
+/// Dosya yoksa ya da bozuksa sıfırdan başlıyoruz; öğrenilen bilgi bir
+/// kolaylık, doğruluk koşulu değil.
+fn basamak_oku() -> usize {
+    std::fs::read_to_string(TEKNIK_DOSYASI)
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|i| *i < MERDIVEN.len())
+        .unwrap_or(0)
+}
+
+/// Basamağı bir sonraki tur için saklar.
+fn basamak_yaz(i: usize) {
+    if let Some(dir) = std::path::Path::new(TEKNIK_DOSYASI).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(TEKNIK_DOSYASI, i.to_string());
+}
+
+/// Arayüzün okuyacağı durum dosyasını yazar.
+///
+/// Motorla arayüz arasında doğrudan bağlantı yok; bu dosya tek köprü.
+/// İki saniyede bir yazılıyor — sayaçlar atomik, yazma da tek çağrı, yani
+/// maliyeti yok denecek kadar az.
+fn durum_yaz(
+    engine: &TransparentEngine,
+    nfq: &trdpi_nfqueue::NfqueueEngine,
+    basamak: usize,
+    quic_acik: bool,
+    dns: &str,
+) {
+    let s = engine.stats();
+    let q = nfq.stats();
+    let mut icerik = String::with_capacity(160);
+    for (anahtar, deger) in [
+        ("baglanti", s.accepted.to_string()),
+        ("kurulan", s.established.to_string()),
+        ("yeniden", s.retries.to_string()),
+        ("basarisiz", s.failed.to_string()),
+        ("yedek_adres", s.alternates.to_string()),
+        ("quic_gorulen", q.quic_seen.to_string()),
+        ("quic_asilan", q.quic_faked.to_string()),
+        ("quic", if quic_acik { "asiliyor" } else { "kapali" }.to_string()),
+        ("teknik", basamak_adi(basamak).to_string()),
+        ("dns", dns.to_string()),
+    ] {
+        icerik.push_str(anahtar);
+        icerik.push('=');
+        icerik.push_str(&deger);
+        icerik.push('\n');
+    }
+    let _ = std::fs::write(trdpi_core::paths::STATUS_FILE, icerik);
+}
+
+/// Hattın tam raporunu üretir.
+///
+/// Amaç tek bir sorunun cevabı değil, **paylaşılabilir** bir kayıt: bu
+/// hattın neyi nasıl engellediği. Başka operatörlerde çalıştırılıp
+/// karşılaştırılabilsin diye var — ölçemediğimiz tek şey ikinci bir hattı
+/// görmekti.
+///
+/// Telemetri yok: çıktı yalnızca ekrana yazılıyor, kullanıcı isterse
+/// paylaşıyor. Ağdaki hiçbir yere gönderilmiyor.
+fn rapor() {
+    use std::net::TcpStream;
+
+    println!("TR-DPI hat raporu · sürüm {}", env!("CARGO_PKG_VERSION"));
+    println!("Bu çıktı hiçbir yere gönderilmiyor; paylaşmak sana kalmış.");
+    println!();
+
+    println!("Adres çözümleme");
+    let sonuclar = olc();
+    let parmak = NetworkFingerprint::from_results(&sonuclar);
+    println!(
+        "  sistem çözümleyicisi : {}",
+        if parmak.dns_tampering {
+            "yanlış adres veriyor"
+        } else {
+            "sorun yok"
+        }
+    );
+    for (adres, ad) in SIFRELI_SUNUCULAR {
+        let a: std::net::SocketAddr = adres.parse().expect("sabit adres");
+        let acik = TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok();
+        println!(
+            "  şifreli ({ad:<18}) : {}",
+            if acik { "ulaşılabiliyor" } else { "kapalı" }
+        );
+    }
+    for (adres, ad) in [("1.1.1.1:53", "düz 53. kapı"), ("77.88.8.8:1253", "standart dışı kapı")] {
+        let a: std::net::SocketAddr = adres.parse().expect("sabit adres");
+        let temiz = wire::query(a, SINAMA_ADI, Duration::from_secs(3))
+            .map(|y| !wire::is_censorship_response(&y) && !y.addresses.is_empty())
+            .unwrap_or(false);
+        println!(
+            "  {ad:<26} : {}",
+            if temiz { "doğru yanıt" } else { "yanıtsız ya da yanlış" }
+        );
+    }
+
+    println!();
+    println!("UDP yolları");
+    println!("  {}", udp_ozeti(&sonuclar).replace('\n', "\n  "));
+
+    println!();
+    println!("Siteler");
+    for site in ["discord.com", "www.roblox.com", "4chan.org", "www.google.com"] {
+        println!("  {site}");
+        for satir in site_ozeti(site) {
+            println!("    {satir}");
+        }
+    }
+
+    println!();
+    println!("Bu raporu başka bir operatörde de çalıştırıp karşılaştırabilirsin.");
+}
+
+/// Bir sitenin durumunu kısa satırlar halinde döner.
+fn site_ozeti(site: &str) -> Vec<String> {
+    use trdpi_core::DiagnosticKind;
+
+    let sonuclar = probe_target(&Target::probe(site), &Timeouts::default());
+    let mut satirlar = Vec::new();
+    for (ad, kind) in [
+        ("adres", DiagnosticKind::DnsIntegrity),
+        ("bağlantı", DiagnosticKind::TcpConnect),
+        ("güvenli aşama", DiagnosticKind::TlsHandshake),
+    ] {
+        let d = match sonuclar.iter().find(|r| r.kind == kind) {
+            None => "ölçülemedi".to_string(),
+            Some(r) if r.success => "sorun yok".to_string(),
+            Some(r) => aciklama(r.classification).to_string(),
+        };
+        satirlar.push(format!("{ad:<15}{d}"));
+    }
+    satirlar.push(format!("{:<15}{}", "QUIC", quic_satiri(site)));
+    satirlar
+}
+
+/// Tek bir sitenin neyinin bozuk olduğunu söyler.
+///
+/// Tüm ölçümü çalıştırmak yerine sorulan siteye odaklanıyor: "roblox
+/// açılmıyor" dendiğinde ilk bakılacak yer burası. Yönetici yetkisi
+/// istemiyor.
+fn dene(site: &str) {
+    use trdpi_core::DiagnosticKind;
+
+    let site = site.trim_start_matches("https://").trim_end_matches('/');
+    println!("{site} ölçülüyor...");
+    println!();
+
+    let sonuclar = probe_target(&Target::probe(site), &Timeouts::default());
+    let bul = |k: DiagnosticKind| sonuclar.iter().find(|r| r.kind == k);
+
+    let satir = |ad: &str, r: Option<&trdpi_core::DiagnosticResult>| {
+        let (durum, ek) = match r {
+            None => ("ölçülemedi".to_string(), String::new()),
+            Some(r) if r.success => (
+                "sorun yok".to_string(),
+                r.latency
+                    .map(|d| format!(" ({} ms)", d.as_millis()))
+                    .unwrap_or_default(),
+            ),
+            Some(r) => (aciklama(r.classification).to_string(), String::new()),
+        };
+        println!("  {ad:<18}{durum}{ek}");
+    };
+
+    satir("Adres çözümleme", bul(DiagnosticKind::DnsIntegrity));
+    satir("Bağlantı", bul(DiagnosticKind::TcpConnect));
+    satir("Güvenli aşama", bul(DiagnosticKind::TlsHandshake));
+
+    // QUIC'i ada göre ölçmek için sitenin adresine ihtiyacımız var.
+    let quic = quic_satiri(site);
+    println!("  {:<18}{quic}", "QUIC");
+
+    println!();
+    let bozuk = sonuclar.iter().any(|r| !r.success);
+    if bozuk {
+        println!("Bu sitede engelleme belirtisi var.");
+        println!("Korumayı başlatıp tekrar dene:  sudo trdpi");
+    } else {
+        println!("Bu sitede engelleme belirtisi yok.");
+    }
+}
+
+/// Sitenin **gerçek** adresini bulur.
+///
+/// Sistemin çözümleyicisi zehirliyse sansür adresini döndürür; o adrese
+/// QUIC ölçümü yapmak anlamsız olur, kontrol de başarısız olacağı için
+/// sonuç "ölçülemedi" çıkar. Bu yüzden zehirli yanıt görürsek çalışan bir
+/// kaynağa sorup gerçek adresi alıyoruz. Yönetici yetkisi gerekmiyor:
+/// sistemi değiştirmiyoruz, yalnızca soruyoruz.
+fn gercek_adres(site: &str) -> Option<std::net::SocketAddr> {
+    use std::net::{SocketAddr, ToSocketAddrs};
+
+    let sistem: Vec<std::net::Ipv4Addr> = (site, 443u16)
+        .to_socket_addrs()
+        .ok()?
+        .filter_map(|a| match a.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            _ => None,
+        })
+        .collect();
+
+    let zehirli = sistem.is_empty()
+        || wire::is_censorship_response(&wire::DnsAnswer {
+            addresses: sistem.clone(),
+            rcode: 0,
+        });
+    if !zehirli {
+        return sistem.first().map(|ip| SocketAddr::new((*ip).into(), 443));
+    }
+
+    let (kaynak, _) = upstream::find_working(DEFAULT_CANARY, Duration::from_secs(3))?;
+    let yanit = wire::query(kaynak.addr, site, Duration::from_secs(3)).ok()?;
+    yanit
+        .addresses
+        .first()
+        .map(|ip| SocketAddr::new((*ip).into(), 443))
+}
+
+/// Sınıflandırmanın kullanıcıya gösterilecek karşılığı.
+fn aciklama(s: trdpi_core::Classification) -> &'static str {
+    use trdpi_core::Classification as C;
+    match s {
+        C::DnsTampered => "yanlış adres veriliyor",
+        C::TcpReset => "bağlantı kesiliyor",
+        C::TlsInterference => "güvenli aşamada kesiliyor",
+        C::Timeout => "yanıt gelmiyor",
+        C::QuicBlocked => "engelli",
+        C::Throttled => "yavaşlatılıyor",
+        C::Degraded => "bozuk",
+        C::Healthy => "sorun yok",
+        C::Unknown => "belirsiz",
+    }
+}
+
+/// Sitenin QUIC durumunu tek satırda anlatır.
+fn quic_satiri(site: &str) -> String {
+    use trdpi_diagnostics::udp::QuicAdSonucu;
+
+    let Some(hedef) = gercek_adres(site) else {
+        return "adres bulunamadı".into();
+    };
+    match udp::quic_ada_gore_engelli(hedef, site, Duration::from_secs(3)) {
+        QuicAdSonucu::Engelsiz => "sorun yok".into(),
+        QuicAdSonucu::AdaGoreEngelli => "site adına göre engelli".into(),
+        QuicAdSonucu::Olculemedi => "ölçülemedi (sunucu QUIC desteklemiyor olabilir)".into(),
+    }
+}
+
+/// Açılışta başlatan servisin adı.
+const SERVIS: &str = "trdpi.service";
+
+/// Açılışta başlatmayı açar ya da kapatır.
+///
+/// Bilerek **isteğe bağlı**: koruma sistem geneli değişiklik yapıyor ve
+/// bunun kullanıcının kararı olması gerekiyor. Paket servisi kuruyor ama
+/// etkinleştirmiyor.
+fn acilista(ac: bool) {
+    if !servis_var() {
+        eprintln!();
+        eprintln!("Açılışta başlatma yalnızca paketle kurulduğunda kullanılabilir.");
+        std::process::exit(1);
+    }
+    // `--now` bilerek yok: kullanıcı korumayı zaten çalıştırıyor olabilir ve
+    // onu durdurup yeniden başlatmak açık bağlantıları koparırdı.
+    let komut = if ac { "enable" } else { "disable" };
+    match systemctl(&[komut, SERVIS]) {
+        Ok(()) if ac => {
+            println!("Açılışta kendiliğinden başlayacak.");
+            println!("Şimdi başlatmak için:  sudo trdpi");
+        }
+        Ok(()) => println!("Açılışta başlamayacak."),
+        Err(e) => {
+            eprintln!();
+            eprintln!("Ayar değiştirilemedi: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Açılışta başlatmanın açık olup olmadığını söyler.
+fn acilista_durum() {
+    if !servis_var() {
+        println!("Açılışta başlatma: kullanılamıyor (paketle kurulmamış).");
+        return;
+    }
+    match systemctl_cikti(&["is-enabled", SERVIS]) {
+        Ok(s) if s.trim() == "enabled" => println!("Açılışta başlatma: açık"),
+        _ => {
+            println!("Açılışta başlatma: kapalı");
+            println!("Açmak için:  sudo trdpi --acilista-ac");
+        }
+    }
+}
+
+/// Servis dosyası kurulu mu?
+fn servis_var() -> bool {
+    [
+        "/usr/lib/systemd/system",
+        "/lib/systemd/system",
+        "/etc/systemd/system",
+    ]
+    .iter()
+    .any(|d| std::path::Path::new(d).join(SERVIS).exists())
+}
+
+fn systemctl(args: &[&str]) -> Result<(), String> {
+    systemctl_cikti(args).map(|_| ())
+}
+
+fn systemctl_cikti(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("systemctl")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    let hata = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    Err(if hata.is_empty() {
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    } else {
+        hata
+    })
 }
 
 /// Denenecek şifreli adres sunucuları.
@@ -765,7 +1158,8 @@ fn udp_ozeti(sonuclar: &[trdpi_core::DiagnosticResult]) -> String {
     if NetworkFingerprint::from_results(sonuclar).dns_tampering {
         satir.push_str(
             "
-  (QUIC ölçümü yolun genel durumuna bakar; ada göre konan engeli görmez.)",
+  (bu satır yolun genel durumu; bir sitenin ada göre engelli olup
+   olmadığı için:  trdpi --dene <site>)",
         );
     }
     satir
@@ -841,10 +1235,17 @@ fn yardim() {
     println!("                           bazı uygulamalar açılmayabilir)");
     println!("  trdpi --yardim    bu metin");
     println!("  trdpi --surum     sürüm numarası");
+    println!();
+    println!("  trdpi --dene <site>          tek bir siteyi ölç");
+    println!("  trdpi --rapor                hattın tam raporu (paylaşılabilir)");
+    println!();
+    println!("  trdpi --acilista              açılışta başlatma durumu");
+    println!("  sudo trdpi --acilista-ac      açılışta kendiliğinden başlasın");
+    println!("  sudo trdpi --acilista-kapat   başlamasın");
 }
 
 /// Tanıdığımız bütün seçenekler.
-const SECENEKLER: [&str; 10] = [
+const SECENEKLER: [&str; 15] = [
     "--yardim",
     "-h",
     "--surum",
@@ -855,6 +1256,11 @@ const SECENEKLER: [&str; 10] = [
     "--quic-gecir",
     "--sure",
     "--bekci",
+    "--acilista",
+    "--acilista-ac",
+    "--acilista-kapat",
+    "--dene",
+    "--rapor",
 ];
 
 /// Listede olmayan ilk argümanı döndürür.
@@ -872,6 +1278,10 @@ fn bilinmeyen_secenek(args: &[String]) -> Option<&str> {
         // Bekçinin kalan argümanları pid ve tablo adları; onları denetlemiyoruz.
         if a == "--bekci" {
             return None;
+        }
+        if a == "--dene" {
+            i += 2; // seçeneğin kendisi ve site adı
+            continue;
         }
         if !SECENEKLER.contains(&a) {
             return Some(a);
@@ -969,6 +1379,20 @@ mod testler {
     }
 
     #[test]
+    fn hatirlanan_basamak_sinirlarin_icinde() {
+        // Bozuk ya da eski bir dosya yüzünden dizinin dışına çıkmayalım.
+        for ham in ["0", "3", "99", "cop", ""] {
+            let i = ham
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|i| *i < MERDIVEN.len())
+                .unwrap_or(0);
+            assert!(i < MERDIVEN.len());
+        }
+    }
+
+    #[test]
     fn her_basamagin_adi_var() {
         for i in 0..MERDIVEN.len() {
             assert!(!basamak_adi(i).is_empty());
@@ -994,8 +1418,12 @@ mod testler {
             classification: Classification::DnsTampered,
             detail: None,
         }];
-        let metin = udp_ozeti(&sonuclar);
-        assert!(!metin.contains("   "), "girinti sızmış: {metin:?}");
+        // Satır başındaki girinti bilinçli (alt satır hizalaması); sızma
+        // satırın **içinde** arka arkaya boşluk olarak görünüyor.
+        for satir in udp_ozeti(&sonuclar).lines() {
+            let govde = satir.trim_start();
+            assert!(!govde.contains("   "), "girinti sızmış: {govde:?}");
+        }
     }
 
     #[test]

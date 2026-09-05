@@ -28,6 +28,27 @@ pub const PIDFILE_FALLBACK: &str = "/var/lib/trdpi/pid";
 /// sürecin adına da bakılır.
 pub const PROCESS_NAME: &str = "trdpi";
 
+/// Motorun anlık durumunu yazdığı dosya.
+///
+/// Arayüz motorla doğrudan konuşmuyor; sayaçları ve o an kullanılan tekniği
+/// buradan okuyor. Küçük ve satır tabanlı: ayrıştırmak için kütüphane
+/// gerekmiyor, yazmak da bir sistem çağrısından ibaret.
+pub const STATUS_FILE: &str = "/run/trdpi.durum";
+
+/// Durum dosyasından bir alanı okur.
+///
+/// Biçim `anahtar=değer`, satır başına bir tane. Bilinmeyen satırlar
+/// yoksayılıyor ki ileride alan eklemek eski arayüzü bozmasın.
+pub fn status_field<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+    contents
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        // Anahtar da kırpılıyor: yazan taraf yanlışlıkla girinti bırakırsa
+        // okuma bundan etkilenmesin.
+        .find(|(k, _)| k.trim() == key)
+        .map(|(_, v)| v.trim())
+}
+
 /// Kimlik dosyasının içeriğinden süreç kimliğini çıkarır.
 ///
 /// Saf fonksiyon: dosya sistemine dokunmaz.
@@ -64,5 +85,47 @@ mod tests {
         ] {
             assert_eq!(parse_pid(kotu), None, "kabul edilmemeliydi: {kotu:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod durum_testleri {
+    use super::*;
+
+    const ORNEK: &str = "baglanti=12
+kurulan=11
+teknik=yeniden deneme
+";
+
+    #[test]
+    fn alan_okunuyor() {
+        assert_eq!(status_field(ORNEK, "baglanti"), Some("12"));
+        assert_eq!(status_field(ORNEK, "teknik"), Some("yeniden deneme"));
+    }
+
+    #[test]
+    fn olmayan_alan_none() {
+        assert_eq!(status_field(ORNEK, "yok"), None);
+    }
+
+    #[test]
+    fn bozuk_satirlar_yoksayiliyor() {
+        // İleride alan eklemek eski arayüzü bozmamalı.
+        let s = "cop
+baglanti=5
+=bos
+";
+        assert_eq!(status_field(s, "baglanti"), Some("5"));
+    }
+
+    #[test]
+    fn anahtardaki_girinti_okumayi_bozmuyor() {
+        assert_eq!(status_field("   baglanti=7
+", "baglanti"), Some("7"));
+    }
+
+    #[test]
+    fn bos_icerik_panik_yapmiyor() {
+        assert_eq!(status_field("", "baglanti"), None);
     }
 }
