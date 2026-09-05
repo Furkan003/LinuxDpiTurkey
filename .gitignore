@@ -11,3 +11,4 @@ dist/
 
 # Makineye özel derleme yolu (OneDrive dışı)
 .cargo/config.toml
+devnull
