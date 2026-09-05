@@ -89,6 +89,12 @@ impl RedirectRules {
             ]),
         ];
 
+        // Yalnızca IPv4. `inet` ailesindeki kural niteleyicisiz yazılırsa
+        // IPv6'yı da yakalar; oysa dinleyicimiz 127.0.0.1'de ve özgün hedefi
+        // yalnızca IPv4 seçeneğiyle (`SOL_IP`) okuyabiliyoruz. Yakalayıp
+        // taşıyamadığımız trafik tamamen kesilirdi — dokunmamak yeğdir.
+        // IPv6 böylece korumasız ama **çalışır** kalıyor; adres düzeltmesi
+        // ona da fayda sağlıyor.
         for port in &self.ports {
             cmds.push(argv(&[
                 "add",
@@ -96,6 +102,9 @@ impl RedirectRules {
                 "inet",
                 t,
                 "output",
+                "meta",
+                "nfproto",
+                "ipv4",
                 "tcp",
                 "dport",
                 &port.to_string(),
@@ -359,6 +368,18 @@ mod tests {
             .filter(|c| c.contains(&"redirect".to_string()))
             .count();
         assert_eq!(redirects, 2);
+        // IPv6 kapsam dışı: yakalayıp taşıyamadığımız trafiği kesmeyelim.
+        for c in r
+            .install_commands()
+            .into_iter()
+            .filter(|c| c.contains(&"redirect".to_string()))
+        {
+            assert!(
+                c.windows(3)
+                    .any(|w| w == ["meta".to_string(), "nfproto".to_string(), "ipv4".to_string()]),
+                "yönlendirme IPv6'yı da yakalıyor: {c:?}"
+            );
+        }
     }
 
     /// Komutlar argüman dizisi olarak çalıştırıldığı için kabuk hiç devreye

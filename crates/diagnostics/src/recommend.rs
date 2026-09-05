@@ -49,8 +49,9 @@ pub fn recommend(results: &[DiagnosticResult]) -> Recommendation {
             "Adres çözümlemesi, bağımsız kaynakların verdiğinden farklı ve çalışmayan \
              adresler döndürüyor.",
             &[
-                "Bilgisayarının adres çözümleme ayarını değiştir (1.1.1.1 veya 8.8.8.8).",
-                "Değiştirdikten sonra bu ölçümü tekrar çalıştır.",
+                "Korumayı başlat:  sudo trdpi",
+                "Çalışan bir adres kaynağı kendiliğinden bulunur; elle ayar gerekmez.",
+                "Elle 1.1.1.1 veya 8.8.8.8 yazmak çoğu zaman yetmez: bu hatlarda                  53. kapı da filtrelenir.",
                 "Sorun sürerse engel başka yerde demektir; sonucu bildir.",
             ],
         );

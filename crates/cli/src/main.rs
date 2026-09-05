@@ -30,6 +30,20 @@ const DNS_STATE: &str = "/var/lib/trdpi/onceki-dns";
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // Yazım hatası olan bir bayrak sessizce yok sayılırsa program varsayılan
+    // işini yapar — yani sistem geneli değişiklik uygular. `trdpi --surum`
+    // yazan biri sürümü öğrenmek isterken korumayı başlatmamalı.
+    if let Some(bilinmeyen) = bilinmeyen_secenek(&args) {
+        return bitir(&format!(
+            "Bilinmeyen seçenek: {bilinmeyen}
+Seçenekler için:  trdpi --yardim"
+        ));
+    }
+
+    if args.iter().any(|a| a == "--surum" || a == "-V") {
+        println!("TR-DPI {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if args.iter().any(|a| a == "--yardim" || a == "-h") {
         return yardim();
     }
@@ -120,9 +134,16 @@ fn main() {
     let engine = TransparentEngine::new(TransparentConfig::default());
     let mut snapshot = match engine.prepare(SessionId::new()) {
         Ok(s) => s,
-        Err(e) => return bitir(&e.user_message()),
+        Err(e) => {
+            // Adres ayarını değiştirmiş olabiliriz; koruma kurulmadıysa
+            // kullanıcıyı yarım bir durumda bırakmıyoruz.
+            dns_geri_al();
+            return bitir(&e.user_message());
+        }
     };
     if let Err(e) = engine.apply(&profile, &mut snapshot) {
+        let _ = engine.rollback(snapshot);
+        dns_geri_al();
         return bitir(&e.user_message());
     }
 
@@ -184,7 +205,12 @@ fn main() {
 
     println!("Geri alınıyor...");
     instance::clear_pidfile();
-    match engine.rollback(snapshot) {
+    // Sıra önemli: önce yönlendirme, sonra adres ayarı. Yönlendirme
+    // kalkmadan çözümleyiciyi değiştirirsek arada bir an yanlış adrese
+    // giden trafik oluşur.
+    let yonlendirme = engine.rollback(snapshot);
+    dns_geri_al();
+    match yonlendirme {
         Ok(()) => println!("Temiz."),
         Err(e) => {
             eprintln!("{}", e.user_message());
@@ -263,7 +289,7 @@ fn dns_duzelt() -> Result<String, String> {
     // Çalışma anındaki ayar yeniden başlatınca kaybolur; kalıcı da yaz.
     // Başarısız olursa koruma yine çalışır, yalnızca her açılışta
     // komutu tekrarlamak gerekir.
-    let kalici = resolver::write_persistent(secilen.addr).is_ok();
+    let kalici = resolver::write_persistent(&config.interface, secilen.addr).is_ok();
     Ok(if kalici {
         format!("{} (yeniden başlatmaya dayanıklı)", secilen.label)
     } else {
@@ -282,28 +308,50 @@ fn geri_al() {
         println!("Yönlendirme kuralları kaldırıldı ({}).", temizlenen.len());
     }
 
-    // Kalıcı ayar dosyası.
-    match resolver::remove_persistent() {
-        Ok(()) => {}
-        Err(e) => eprintln!("{}", e.user_message()),
+    dns_geri_al();
+    println!("Temiz.");
+}
+
+/// Adres çözümleme ayarını eski haline getirir.
+///
+/// Koruma **nasıl biterse bitsin** çağrılmalı: Ctrl+C, sürenin dolması ya da
+/// `--durdur`. Çağrılmazsa kullanıcının sistemi yabancı bir çözümleyicide
+/// kalır ve kalıcı dosya yeniden başlatmaya da dayandığı için bu sessizce
+/// süreklileşir.
+///
+/// Hiçbir şey değiştirmediysek dokunmuyoruz: kullanıcının kendi elle
+/// ayarladığı çözümleyiciyi sıfırlamak, düzeltmekten daha kötü olurdu.
+/// Değiştirdiğimizin tek kanıtı durum dosyası ve kalıcı ayar dosyası.
+fn dns_geri_al() {
+    let durum_var = std::path::Path::new(DNS_STATE).exists();
+    // Hem yeni birim hem de eski sürümlerden kalan drop-in dosyası.
+    let kalici_var = std::path::Path::new(resolver::UNIT_PATH).exists()
+        || std::path::Path::new(resolver::DROPIN_PATH).exists();
+    if !durum_var && !kalici_var {
+        return;
     }
 
-    // Adres ayarı.
-    if let Some(arayuz) = resolver::default_interface() {
-        let onceki = std::fs::read_to_string(DNS_STATE).unwrap_or_default();
-        match resolver::run(&ResolverConfig::revert_command(onceki.trim(), &arayuz)) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(DNS_STATE);
-                if onceki.trim().is_empty() {
-                    println!("Adres ayarı bağlantının varsayılanına döndürüldü.");
-                } else {
-                    println!("Adres ayarı geri getirildi: {}", onceki.trim());
-                }
-            }
-            Err(e) => eprintln!("{}", e.user_message()),
+    if kalici_var {
+        if let Err(e) = resolver::remove_persistent() {
+            eprintln!("{}", e.user_message());
         }
     }
-    println!("Temiz.");
+
+    let Some(arayuz) = resolver::default_interface() else {
+        return;
+    };
+    let onceki = std::fs::read_to_string(DNS_STATE).unwrap_or_default();
+    match resolver::run(&ResolverConfig::revert_command(onceki.trim(), &arayuz)) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(DNS_STATE);
+            if onceki.trim().is_empty() {
+                println!("Adres ayarı bağlantının varsayılanına döndürüldü.");
+            } else {
+                println!("Adres ayarı geri getirildi: {}", onceki.trim());
+            }
+        }
+        Err(e) => eprintln!("{}", e.user_message()),
+    }
 }
 
 /// UDP ölçümlerinin tek satırlık özeti.
@@ -397,10 +445,79 @@ fn yardim() {
     println!("  sudo trdpi --quic-gecir  QUIC'i kapatma (bazı siteler hızlanır,");
     println!("                           bazı uygulamalar açılmayabilir)");
     println!("  trdpi --yardim    bu metin");
+    println!("  trdpi --surum     sürüm numarası");
+}
+
+/// Tanıdığımız bütün seçenekler.
+const SECENEKLER: [&str; 9] = [
+    "--yardim",
+    "-h",
+    "--surum",
+    "-V",
+    "--olc",
+    "--durdur",
+    "--geri",
+    "--quic-gecir",
+    "--sure",
+];
+
+/// Listede olmayan ilk argümanı döndürür.
+///
+/// `--sure`'nin ardından bir sayı gelir; o değer seçenek değildir ve
+/// atlanır. Saf fonksiyon — testi kolay olsun diye ayrıldı.
+fn bilinmeyen_secenek(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--sure" {
+            i += 2; // seçeneğin kendisi ve değeri
+            continue;
+        }
+        if !SECENEKLER.contains(&a) {
+            return Some(a);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn bitir(mesaj: &str) {
     eprintln!();
     eprintln!("{mesaj}");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod testler {
+    use super::*;
+
+    fn v(parcalar: &[&str]) -> Vec<String> {
+        parcalar.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tanidik_secenekler_kabul_ediliyor() {
+        assert_eq!(bilinmeyen_secenek(&v(&["--olc"])), None);
+        assert_eq!(bilinmeyen_secenek(&v(&["--geri"])), None);
+        assert_eq!(bilinmeyen_secenek(&v(&["--quic-gecir", "--surum"])), None);
+    }
+
+    #[test]
+    fn surenin_degeri_secenek_sayilmiyor() {
+        assert_eq!(bilinmeyen_secenek(&v(&["--sure", "120"])), None);
+        assert_eq!(bilinmeyen_secenek(&v(&["--sure", "120", "--olc"])), None);
+    }
+
+    #[test]
+    fn yazim_hatasi_yakalaniyor() {
+        // Asıl mesele bu: sessizce yok sayılırsa koruma başlıyordu.
+        assert_eq!(bilinmeyen_secenek(&v(&["--surumm"])), Some("--surumm"));
+        assert_eq!(bilinmeyen_secenek(&v(&["--version"])), Some("--version"));
+        assert_eq!(bilinmeyen_secenek(&v(&["--olc", "--dur"])), Some("--dur"));
+    }
+
+    #[test]
+    fn bossa_sorun_yok() {
+        assert_eq!(bilinmeyen_secenek(&[]), None);
+    }
 }

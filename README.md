@@ -79,7 +79,9 @@ Trafik yerel bir motordan geçiyor ama motor veriyi kopyalamıyor; çekirdek iki
 
 **1. Adres çözümlemesine müdahale.** Engellenen siteler sorulduğunda sistem sahte bir adres alıyor (`195.175.254.2` — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres). O adrese hiçbir şekilde ulaşılamıyor.
 
-Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor ve ayarı yeniden başlatmaya dayanıklı biçimde yazıyor.
+Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor.
+
+Ayar **bağlantı bazında** uygulanıyor ve açılışta aynı komutu tekrarlayan küçük bir systemd birimiyle kalıcılaşıyor. Genel (global) ayar dosyası yazmak işe yaramıyordu: systemd-resolved sorguları bağlantının kendi çözümleyicisine yönlendirdiği için, DHCP'den adres alan her kurulumda genel ayar hiç devreye girmiyordu. Ölçüldü ve düzeltildi.
 
 **2. Uygulamaların boşuna beklemesi.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni bağlantı yöntemi. Bu yol engelliyse yanıt hiç gelmiyor ve uygulama zaman aşımını bekleyip ancak sonra TCP'ye düşüyor. Bekleme boyunca ekranda hiçbir şey olmuyor.
 
@@ -149,6 +151,8 @@ Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kap
 
 **Adresin her yolunun kapatılmasını aşamaz.** Alan adının bütün adresleri engellenmişse yapılabilecek bir şey kalmıyor; trafiği başka bir ülkeden geçirmek gerekir ve bu VPN demektir.
 
+**IPv6 trafiğini kapsamına almaz.** Yönlendirme yalnızca IPv4 üzerinde çalışıyor; özgün hedefi okuyan çekirdek seçeneğinin IPv6 karşılığı ayrı bir iş ve elimizde IPv6'lı bir ölçüm hattı yok. Yakalayıp taşıyamadığımız trafiği kesmemek için IPv6 bilinçli olarak **kural dışı** bırakıldı: korumasız, ama çalışır. Adres düzeltmesi IPv6 hedeflerine de fayda sağlıyor.
+
 **Seni gizlemez.** Bu bir VPN değil; kim olduğunu saklamıyor, yalnızca engellenen adreslere ulaşmanı sağlıyor.
 
 ## Gizlilik
@@ -172,7 +176,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 228 test
+cargo test                                   # 253 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret

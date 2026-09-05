@@ -77,7 +77,67 @@ fn argv(parts: &[&str]) -> Vec<String> {
 /// dokunmuyoruz; böylece geri alma tek dosyayı silmekten ibaret.
 pub const DROPIN_PATH: &str = "/etc/systemd/resolved.conf.d/trdpi.conf";
 
+/// Açılışta ayarı yeniden uygulayan systemd biriminin yolu.
+///
+/// Neden drop-in dosyası değil: `resolved.conf.d` altındaki `DNS=` satırı
+/// **genel** (global) ayarı belirler, systemd-resolved ise sorguları
+/// arayüzün kendi çözümleyicisine yönlendirir. DHCP'den çözümleyici alan
+/// her bağlantıda — yani neredeyse her ev kullanıcısında — genel ayar hiç
+/// devreye girmez. Ölçüldü: drop-in yerindeyken bile `resolvectl query`
+/// yanıtı `-- link: enp3s0` diyerek sansür adresini döndürdü.
+///
+/// Bu birim, çalışırken işe yaradığı doğrulanmış olan **arayüz bazlı**
+/// komutun ta kendisini açılışta tekrarlıyor.
+pub const UNIT_PATH: &str = "/etc/systemd/system/trdpi-dns.service";
+
+/// Birimin adı.
+pub const UNIT_NAME: &str = "trdpi-dns.service";
+
+/// `resolvectl`'in bulunacağı olağan yerler, sırayla.
+const RESOLVECTL_ADAYLARI: [&str; 3] = [
+    "/usr/bin/resolvectl",
+    "/bin/resolvectl",
+    "/usr/sbin/resolvectl",
+];
+
+/// Birimde yazacak `resolvectl` yolu.
+///
+/// systemd, yol içermeyen bir `ExecStart`'ı yalnızca sabit bir dizin
+/// listesinde arar; dağıtımdan dağıtıma değişebileceği için mutlak yol
+/// yazıyoruz. Hiçbiri yoksa en yaygın olanı varsayıyoruz.
+pub fn resolvectl_path(var_mi: impl Fn(&str) -> bool) -> &'static str {
+    RESOLVECTL_ADAYLARI
+        .into_iter()
+        .find(|y| var_mi(y))
+        .unwrap_or(RESOLVECTL_ADAYLARI[0])
+}
+
+/// Açılışta çalışacak birimin içeriği.
+pub fn unit_contents(program: &str, interface: &str, upstream: SocketAddr) -> String {
+    format!(
+        "# TR-DPI tarafından oluşturuldu.
+# Kaldırmak için:  sudo trdpi --geri
+[Unit]
+Description=TR-DPI adres çözümleme ayarı
+After=network-online.target systemd-resolved.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={program} dns {interface} {}
+
+[Install]
+WantedBy=multi-user.target
+",
+        format_upstream(upstream)
+    )
+}
+
 /// Kalıcı ayar dosyasının içeriği.
+///
+/// Artık yazılmıyor; yalnızca eski kurulumlardan kalan dosyayı tanımak ve
+/// silmek için duruyor.
 pub fn dropin_contents(upstream: SocketAddr) -> String {
     let mut out = String::new();
     out.push_str(
@@ -156,41 +216,81 @@ mod exec {
         Err(ResolverError::Failed(err.trim().to_owned()))
     }
 
-    /// Kalıcı ayar dosyasını yazar ve servisi yeniden yükler.
-    pub fn write_persistent(upstream: std::net::SocketAddr) -> Result<(), ResolverError> {
-        use super::{dropin_contents, DROPIN_PATH};
+    /// Ayarı açılışta tekrarlayan systemd birimini kurar.
+    ///
+    /// Servis **başlatılmıyor**, yalnızca etkinleştiriliyor: çalışan ayar
+    /// `resolvectl` ile zaten uygulandı, birim yalnızca sonraki açılışı
+    /// ilgilendiriyor. (systemd-resolved'i yeniden başlatmak birkaç saniye
+    /// ad çözümlemesini kesiyor ve o an başlayan indirmeleri çökertiyordu.)
+    pub fn write_persistent(
+        interface: &str,
+        upstream: std::net::SocketAddr,
+    ) -> Result<(), ResolverError> {
+        use super::{unit_contents, UNIT_NAME, UNIT_PATH};
 
-        let path = std::path::Path::new(DROPIN_PATH);
+        let path = std::path::Path::new(UNIT_PATH);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| ResolverError::Failed(format!("dizin oluşturulamadı: {e}")))?;
         }
-        std::fs::write(path, dropin_contents(upstream)).map_err(|e| match e.kind() {
+        let program = super::resolvectl_path(|y| std::path::Path::new(y).exists());
+        std::fs::write(path, unit_contents(program, interface, upstream)).map_err(|e| match e.kind() {
             std::io::ErrorKind::PermissionDenied => ResolverError::Denied,
             _ => ResolverError::Failed(e.to_string()),
-        })
-        // Servisi yeniden başlatmıyoruz. Çalışan ayar `resolvectl` ile zaten
-        // anında uygulandı; bu dosya yalnızca **bir sonraki açılış** için.
-        //
-        // Yeniden başlatmak iki soruna yol açıyordu: birkaç saniyelik ad
-        // çözümleme kesintisi (o anda başlayan büyük indirmeler çöküyordu) ve
-        // durdurmanın gereksiz uzaması.
+        })?;
+
+        systemctl(&["daemon-reload"])?;
+        systemctl(&["enable", UNIT_NAME])?;
+        Ok(())
     }
 
-    /// Kalıcı ayar dosyasını siler ve servisi yeniden yükler.
+    /// Kalıcı ayarı kaldırır.
     ///
-    /// Dosya zaten yoksa bu bir hata değildir; iş bitmiş demektir.
+    /// Zaten yoksa bu bir hata değildir; iş bitmiş demektir. Eski
+    /// sürümlerden kalan `resolved.conf.d` dosyası da temizleniyor.
     pub fn remove_persistent() -> Result<(), ResolverError> {
-        use super::DROPIN_PATH;
+        use super::{DROPIN_PATH, UNIT_NAME, UNIT_PATH};
 
-        // Yeniden başlatma yok; çalışan ayar ayrıca `resolvectl` ile geri
-        // alınıyor, bu dosya yalnızca sonraki açılışı ilgilendiriyor.
-        match std::fs::remove_file(DROPIN_PATH) {
-            Ok(()) => Ok(()),
-            // Dosya zaten yoksa iş bitmiş demektir.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(ResolverError::Failed(e.to_string())),
+        let birim_vardi = std::path::Path::new(UNIT_PATH).exists();
+        if birim_vardi {
+            // Hata yoksayılıyor: birim etkin değilse `disable` yine de
+            // başarısız olabilir, ama dosyayı silmemiz gerekiyor.
+            let _ = systemctl(&["disable", UNIT_NAME]);
         }
+
+        let mut hata = None;
+        for yol in [UNIT_PATH, DROPIN_PATH] {
+            match std::fs::remove_file(yol) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => hata = Some(ResolverError::Failed(e.to_string())),
+            }
+        }
+        if birim_vardi {
+            let _ = systemctl(&["daemon-reload"]);
+        }
+        match hata {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// `systemctl` çalıştırır. Kabuk devreye girmez.
+    fn systemctl(args: &[&str]) -> Result<(), ResolverError> {
+        let out = Command::new("systemctl")
+            .args(args)
+            .output()
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => ResolverError::NotFound,
+                std::io::ErrorKind::PermissionDenied => ResolverError::Denied,
+                _ => ResolverError::Failed(e.to_string()),
+            })?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(ResolverError::Failed(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ))
     }
 
     /// Sistemin çözümleyiciyi hangi araçla yönettiğini tespit eder.
@@ -233,7 +333,7 @@ pub fn run(_args: &[String]) -> Result<String, ResolverError> {
 
 /// Linux dışında kalıcı ayar yoktur.
 #[cfg(not(target_os = "linux"))]
-pub fn write_persistent(_upstream: SocketAddr) -> Result<(), ResolverError> {
+pub fn write_persistent(_interface: &str, _upstream: SocketAddr) -> Result<(), ResolverError> {
     Err(ResolverError::NotFound)
 }
 
@@ -373,5 +473,59 @@ mod tests {
             // Kullanıcıya komut ezberletmiyoruz.
             assert!(!m.contains("resolvectl"), "{m}");
         }
+    }
+}
+
+#[cfg(test)]
+mod birim_testleri {
+    use super::*;
+
+    fn adres(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn birim_arayuz_bazli_komut_yaziyor() {
+        // Asıl kusur buydu: genel (global) ayar link ayarı tarafından
+        // eziliyordu. Birim, çalışırken işe yaradığı doğrulanan
+        // arayüz bazlı komutu tekrarlamalı.
+        let m = unit_contents("/usr/bin/resolvectl", "enp3s0", adres("77.88.8.8:1253"));
+        assert!(m.contains("ExecStart=/usr/bin/resolvectl dns enp3s0 77.88.8.8:1253"));
+    }
+
+    #[test]
+    fn birim_ag_hazir_olduktan_sonra_calisiyor() {
+        let m = unit_contents("/usr/bin/resolvectl", "wlan0", adres("1.1.1.1:53"));
+        assert!(m.contains("After=network-online.target"));
+        assert!(m.contains("WantedBy=multi-user.target"));
+        assert!(m.contains("Type=oneshot"));
+    }
+
+    #[test]
+    fn ipv6_koseli_parantezle_yaziliyor() {
+        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("[2606:4700:4700::1111]:53"));
+        assert!(m.contains("[2606:4700:4700::1111]:53"), "{m}");
+    }
+
+    #[test]
+    fn birim_nasil_kaldirilacagini_soyluyor() {
+        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("9.9.9.9:53"));
+        assert!(m.contains("trdpi --geri"));
+    }
+}
+
+#[cfg(test)]
+mod yol_testleri {
+    use super::*;
+
+    #[test]
+    fn bulunan_ilk_yol_seciliyor() {
+        assert_eq!(resolvectl_path(|y| y == "/bin/resolvectl"), "/bin/resolvectl");
+    }
+
+    #[test]
+    fn hicbiri_yoksa_en_yaygini() {
+        // Yazarken bulamasak da birim geçerli kalmalı.
+        assert_eq!(resolvectl_path(|_| false), "/usr/bin/resolvectl");
     }
 }
