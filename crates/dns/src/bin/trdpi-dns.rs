@@ -94,6 +94,7 @@ fn main() {
     let config = ResolverConfig {
         interface: arayuz.clone(),
         upstream: secilen.addr,
+        tls_host: None,
     };
     if let Err(e) = resolver::run(&config.apply_command()) {
         return bitir(e);

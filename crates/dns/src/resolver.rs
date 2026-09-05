@@ -28,6 +28,13 @@ pub struct ResolverConfig {
     pub interface: String,
     /// Yönlendirilecek üst çözümleyici.
     pub upstream: SocketAddr,
+    /// Şifreli DNS için sunucunun sertifikadaki adı.
+    ///
+    /// Doluysa `resolvectl` sunucuyu `adres#ad` biçiminde alıyor ve
+    /// `dnsovertls` açılabiliyor. Şifreli DNS, standart dışı kapıdan düz
+    /// sorgudan daha sağlam: alan adına göre süzülemiyor, çünkü sorgu
+    /// içeriği görünmüyor.
+    pub tls_host: Option<String>,
 }
 
 impl ResolverConfig {
@@ -36,7 +43,16 @@ impl ResolverConfig {
     /// `resolvectl` `adres:kapı` biçimini kabul eder; standart dışı kapıya
     /// yönlendirebilmemizin sebebi budur.
     pub fn apply_command(&self) -> Vec<String> {
-        argv(&["dns", &self.interface, &format_upstream(self.upstream)])
+        let sunucu = match &self.tls_host {
+            Some(ad) => format!("{}#{ad}", self.upstream.ip()),
+            None => format_upstream(self.upstream),
+        };
+        argv(&["dns", &self.interface, &sunucu])
+    }
+
+    /// Şifreli DNS'i açan ya da kapatan komut.
+    pub fn dnsovertls_command(interface: &str, acik: bool) -> Vec<String> {
+        argv(&["dnsovertls", interface, if acik { "yes" } else { "no" }])
     }
 
     /// Önceki ayarı geri getiren komut.
@@ -124,7 +140,23 @@ pub fn resolvectl_path(var_mi: impl Fn(&str) -> bool) -> &'static str {
 }
 
 /// Açılışta çalışacak birimin içeriği.
-pub fn unit_contents(program: &str, interface: &str, upstream: SocketAddr) -> String {
+pub fn unit_contents(
+    program: &str,
+    interface: &str,
+    upstream: SocketAddr,
+    tls_host: Option<&str>,
+) -> String {
+    let sunucu = match tls_host {
+        Some(ad) => format!("{}#{ad}", upstream.ip()),
+        None => format_upstream(upstream),
+    };
+    // Şifreli DNS iki komut istiyor: sunucu ve şifreleme anahtarı. İkisi de
+    // açılışta tekrarlanmalı.
+    let tls_satiri = match tls_host {
+        Some(_) => format!("ExecStart={program} dnsovertls {interface} yes
+"),
+        None => String::new(),
+    };
     format!(
         "# TR-DPI tarafından oluşturuldu.
 # Kaldırmak için:  sudo trdpi --geri
@@ -136,12 +168,11 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart={program} dns {interface} {}
-
+ExecStart={program} dns {interface} {sunucu}
+{tls_satiri}
 [Install]
 WantedBy=multi-user.target
-",
-        format_upstream(upstream)
+"
     )
 }
 
@@ -236,6 +267,7 @@ mod exec {
     pub fn write_persistent(
         interface: &str,
         upstream: std::net::SocketAddr,
+        tls_host: Option<&str>,
     ) -> Result<(), ResolverError> {
         use super::{unit_contents, UNIT_NAME, UNIT_PATH};
 
@@ -245,7 +277,7 @@ mod exec {
                 .map_err(|e| ResolverError::Failed(format!("dizin oluşturulamadı: {e}")))?;
         }
         let program = super::resolvectl_path(|y| std::path::Path::new(y).exists());
-        std::fs::write(path, unit_contents(program, interface, upstream)).map_err(|e| match e.kind() {
+        std::fs::write(path, unit_contents(program, interface, upstream, tls_host)).map_err(|e| match e.kind() {
             std::io::ErrorKind::PermissionDenied => ResolverError::Denied,
             _ => ResolverError::Failed(e.to_string()),
         })?;
@@ -345,7 +377,11 @@ pub fn run(_args: &[String]) -> Result<String, ResolverError> {
 
 /// Linux dışında kalıcı ayar yoktur.
 #[cfg(not(target_os = "linux"))]
-pub fn write_persistent(_interface: &str, _upstream: SocketAddr) -> Result<(), ResolverError> {
+pub fn write_persistent(
+    _interface: &str,
+    _upstream: SocketAddr,
+    _tls_host: Option<&str>,
+) -> Result<(), ResolverError> {
     Err(ResolverError::NotFound)
 }
 
@@ -375,6 +411,7 @@ mod tests {
         ResolverConfig {
             interface: "enp3s0".into(),
             upstream: "77.88.8.8:1253".parse().unwrap(),
+            tls_host: None,
         }
     }
 
@@ -402,6 +439,7 @@ mod tests {
         let c = ResolverConfig {
             interface: "enp3s0".into(),
             upstream: "[2a02:6b8::feed:0ff]:1253".parse().unwrap(),
+            tls_host: None,
         };
         let cmd = c.apply_command();
         assert!(cmd[2].starts_with('['), "{:?}", cmd);
@@ -501,13 +539,13 @@ mod birim_testleri {
         // Asıl kusur buydu: genel (global) ayar link ayarı tarafından
         // eziliyordu. Birim, çalışırken işe yaradığı doğrulanan
         // arayüz bazlı komutu tekrarlamalı.
-        let m = unit_contents("/usr/bin/resolvectl", "enp3s0", adres("77.88.8.8:1253"));
+        let m = unit_contents("/usr/bin/resolvectl", "enp3s0", adres("77.88.8.8:1253"), None);
         assert!(m.contains("ExecStart=/usr/bin/resolvectl dns enp3s0 77.88.8.8:1253"));
     }
 
     #[test]
     fn birim_ag_hazir_olduktan_sonra_calisiyor() {
-        let m = unit_contents("/usr/bin/resolvectl", "wlan0", adres("1.1.1.1:53"));
+        let m = unit_contents("/usr/bin/resolvectl", "wlan0", adres("1.1.1.1:53"), None);
         assert!(m.contains("After=network-online.target"));
         assert!(m.contains("WantedBy=multi-user.target"));
         assert!(m.contains("Type=oneshot"));
@@ -515,13 +553,13 @@ mod birim_testleri {
 
     #[test]
     fn ipv6_koseli_parantezle_yaziliyor() {
-        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("[2606:4700:4700::1111]:53"));
+        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("[2606:4700:4700::1111]:53"), None);
         assert!(m.contains("[2606:4700:4700::1111]:53"), "{m}");
     }
 
     #[test]
     fn birim_nasil_kaldirilacagini_soyluyor() {
-        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("9.9.9.9:53"));
+        let m = unit_contents("/usr/bin/resolvectl", "eth0", adres("9.9.9.9:53"), None);
         assert!(m.contains("trdpi --geri"));
     }
 }
@@ -549,5 +587,67 @@ mod onbellek_testleri {
     #[test]
     fn onbellek_temizleme_komutu() {
         assert_eq!(ResolverConfig::flush_command(), vec!["flush-caches"]);
+    }
+}
+
+#[cfg(test)]
+mod tls_testleri {
+    use super::*;
+
+    fn adres(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn tls_hostu_varsa_adres_diyez_ad_biciminde() {
+        let c = ResolverConfig {
+            interface: "enp3s0".into(),
+            upstream: adres("1.1.1.1:853"),
+            tls_host: Some("cloudflare-dns.com".into()),
+        };
+        assert_eq!(
+            c.apply_command(),
+            vec!["dns", "enp3s0", "1.1.1.1#cloudflare-dns.com"]
+        );
+    }
+
+    #[test]
+    fn tls_hostu_yoksa_eski_bicim() {
+        let c = ResolverConfig {
+            interface: "enp3s0".into(),
+            upstream: adres("77.88.8.8:1253"),
+            tls_host: None,
+        };
+        assert_eq!(c.apply_command(), vec!["dns", "enp3s0", "77.88.8.8:1253"]);
+    }
+
+    #[test]
+    fn dnsovertls_komutu() {
+        assert_eq!(
+            ResolverConfig::dnsovertls_command("eth0", true),
+            vec!["dnsovertls", "eth0", "yes"]
+        );
+        assert_eq!(
+            ResolverConfig::dnsovertls_command("eth0", false),
+            vec!["dnsovertls", "eth0", "no"]
+        );
+    }
+
+    #[test]
+    fn birim_sifreli_dns_icin_iki_komut_yaziyor() {
+        let m = unit_contents(
+            "/usr/bin/resolvectl",
+            "enp3s0",
+            adres("1.1.1.1:853"),
+            Some("cloudflare-dns.com"),
+        );
+        assert!(m.contains("dns enp3s0 1.1.1.1#cloudflare-dns.com"));
+        assert!(m.contains("dnsovertls enp3s0 yes"));
+    }
+
+    #[test]
+    fn birim_sifresizken_tek_komut() {
+        let m = unit_contents("/usr/bin/resolvectl", "enp3s0", adres("77.88.8.8:1253"), None);
+        assert!(!m.contains("dnsovertls"));
     }
 }

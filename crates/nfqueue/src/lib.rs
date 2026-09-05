@@ -28,8 +28,10 @@
 
 pub mod fake;
 pub mod nft;
+pub mod kripto;
 pub mod packet;
 pub mod quic;
+pub mod quic_initial;
 pub mod raw;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,11 +55,11 @@ pub struct NfqueueConfig {
     pub fake_host: Vec<u8>,
     /// QUIC için kuyruğa alınacak UDP kapıları.
     pub quic_ports: Vec<u16>,
-    /// QUIC sahte paketlerinin ömürleri.
+    /// QUIC sahte paketlerinde denenecek bozma yöntemleri.
     ///
-    /// Birden fazla değer, denetimin farklı uzaklıkta olduğu ağlarda da
-    /// tutması için. Maliyeti bağlantı başına birkaç pakete kalıyor.
-    pub quic_ttls: Vec<u8>,
+    /// Birden fazla yöntem, farklı denetimlerde de tutması için. Maliyeti
+    /// bağlantı başına birkaç pakete kalıyor.
+    pub quic_bozmalar: Vec<quic::Bozma>,
 }
 
 impl Default for NfqueueConfig {
@@ -67,7 +69,7 @@ impl Default for NfqueueConfig {
             capture_ports: vec![443],
             fake_host: fake::DEFAULT_FAKE_HOST.to_vec(),
             quic_ports: vec![443],
-            quic_ttls: quic::DEFAULT_TTLS.to_vec(),
+            quic_bozmalar: quic::default_bozmalar(),
         }
     }
 }
@@ -106,14 +108,31 @@ impl StatsSnapshot {
     }
 }
 
+/// TCP sahte paketi sonradan açılırsa kullanılacak ömür.
+const DEFAULT_TCP_TTL: u8 = 5;
+
+/// Verilen kuralların TCP kapıları için kuyruk kuralı ekler.
+#[cfg(target_os = "linux")]
+fn add_tcp_rules(rules: &QueueRules) -> Result<(), BackendError> {
+    for cmd in rules.tcp_commands() {
+        nft::run(&cmd).map_err(|e| BackendError::ApplyFailed(e.to_string()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn add_tcp_rules(_rules: &QueueRules) -> Result<(), BackendError> {
+    Err(BackendError::MissingCapability("nftables"))
+}
+
 /// Kuyruk işçisine geçirilen ayarlar.
 struct WorkerConfig {
     queue_num: u16,
     /// TCP sahte paketinin ömrü; `None` ise TCP tarafında iş yapılmaz.
     ttl: Option<u8>,
     fake_host: Vec<u8>,
-    /// QUIC sahte paketlerinin ömürleri; boşsa QUIC'e dokunulmaz.
-    quic_ttls: Vec<u8>,
+    /// QUIC sahte paketlerinde denenecek yöntemler; boşsa QUIC'e dokunulmaz.
+    quic_bozmalar: Vec<quic::Bozma>,
 }
 
 #[derive(Debug)]
@@ -141,6 +160,27 @@ impl NfqueueEngine {
             counters: Arc::new(Counters::default()),
             running: Mutex::new(None),
         }
+    }
+
+    /// TCP sahte paketini çalışma anında devreye alır.
+    ///
+    /// Kuyruk kuralı baştan kurulmuyor: her TCP paketini kullanıcı alanına
+    /// taşımak boşuna gecikme demek. Bu teknik gerektiğinde — yani başka
+    /// yöntemler yetmediğinde — kural o an ekleniyor.
+    ///
+    /// İşçi zaten TCP yolunu biliyor; yalnızca kuyruğa paket gelmiyordu.
+    pub fn tcp_yakalamayi_ac(&self) -> Result<(), BackendError> {
+        let slot = self
+            .running
+            .lock()
+            .map_err(|_| BackendError::ApplyFailed("motor kilidi bozuldu".into()))?;
+        let Some(running) = slot.as_ref() else {
+            return Err(BackendError::ApplyFailed("motor çalışmıyor".into()));
+        };
+        if running.rules.ports.is_empty() {
+            return Err(BackendError::ApplyFailed("yakalanacak kapı yok".into()));
+        }
+        add_tcp_rules(&running.rules)
     }
 
     /// Sayaçların anlık görüntüsü.
@@ -256,11 +296,10 @@ impl Backend for NfqueueEngine {
         let mut rules = QueueRules::new(&snapshot.session, self.config.queue_num);
         // Yalnızca gerçekten iş yapacağımız trafiği kuyruğa alıyoruz; boşuna
         // kuyruğa alınan her paket gecikme demek.
-        rules.ports = if ttl.is_some() {
-            self.config.capture_ports.clone()
-        } else {
-            Vec::new()
-        };
+        // Kapılar saklanıyor ama kural baştan kurulmuyor; teknik
+        // gerektiğinde açılıyor. Kuyruğa boşuna paket taşımıyoruz.
+        rules.ports = self.config.capture_ports.clone();
+        rules.tcp_active = false;
         rules.udp_ports = if quic {
             self.config.quic_ports.clone()
         } else {
@@ -273,10 +312,12 @@ impl Backend for NfqueueEngine {
         let worker = start_worker(
             WorkerConfig {
                 queue_num: self.config.queue_num,
-                ttl,
+                // İşçi TCP yolunu biliyor; kural eklenene kadar o yola paket
+                // gelmiyor. Böylece teknik sonradan açılabiliyor.
+                ttl: ttl.or(Some(DEFAULT_TCP_TTL)),
                 fake_host: self.config.fake_host.clone(),
-                quic_ttls: if quic {
-                    self.config.quic_ttls.clone()
+                quic_bozmalar: if quic {
+                    self.config.quic_bozmalar.clone()
                 } else {
                     Vec::new()
                 },
@@ -387,7 +428,7 @@ fn start_worker(
         queue_num,
         ttl,
         fake_host,
-        quic_ttls,
+        quic_bozmalar,
     } = config;
 
     let sender = raw::RawSender::new().map_err(|e| match e.kind() {
@@ -422,16 +463,16 @@ fn start_worker(
             let payload = msg.get_payload();
 
             // QUIC: Initial paketinden hemen önce düşük ömürlü sahteler.
-            if !quic_ttls.is_empty() {
+            if !quic_bozmalar.is_empty() {
                 let initial = quic::udp_payload_offset(payload)
                     .and_then(|b| payload.get(b..))
                     .is_some_and(quic::is_initial);
                 if initial {
                     counters.quic_seen.fetch_add(1, Ordering::Relaxed);
                     let mut gonderildi = false;
-                    for t in &quic_ttls {
+                    for b in &quic_bozmalar {
                         tohum = tohum.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                        match quic::build_fake(payload, *t, tohum) {
+                        match quic::build_fake(payload, *b, tohum) {
                             Some(f) => match sender.send(&f) {
                                 Ok(()) => gonderildi = true,
                                 Err(_) => {

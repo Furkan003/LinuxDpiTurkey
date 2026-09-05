@@ -249,13 +249,25 @@ Seçenekler için:  trdpi --yardim"
             if yukseltmeli_mi(yeni.0, yeni.1) {
                 if basamak + 1 < MERDIVEN.len() {
                     basamak += 1;
-                    engine.set_fragmentation(MERDIVEN[basamak]);
+                    let uygulandi = match MERDIVEN[basamak] {
+                        Basamak::Parcalama(kip) => {
+                            engine.set_fragmentation(kip);
+                            true
+                        }
+                        // Motor kurulamamışsa (yetki ya da çekirdek desteği
+                        // yoksa) bu basamak atlanıyor.
+                        Basamak::SahtePaket => quic_snapshot.is_some() && nfq.tcp_yakalamayi_ac().is_ok(),
+                    };
                     println!();
                     println!(
                         "Bağlantıların {}'i kurulamadı.",
                         oran(yeni.0.saturating_sub(yeni.1), yeni.0)
                     );
-                    println!("Farklı bir teknik deneniyor: {}", basamak_adi(basamak));
+                    if uygulandi {
+                        println!("Farklı bir teknik deneniyor: {}", basamak_adi(basamak));
+                    } else {
+                        println!("{} denenemedi; atlanıyor.", basamak_adi(basamak));
+                    }
                 } else if !tavan_soylendi {
                     tavan_soylendi = true;
                     println!();
@@ -353,9 +365,6 @@ fn olc() -> Vec<trdpi_core::DiagnosticResult> {
 
 /// Çalışan bir adres kaynağı bulup sistemi ona yönlendirir.
 fn dns_duzelt() -> Result<String, String> {
-    let Some((secilen, _)) = upstream::find_working(DEFAULT_CANARY, Duration::from_secs(4)) else {
-        return Err("Çalışan bir adres kaynağı bulunamadı.".into());
-    };
     if resolver::detect_manager() != ResolverManager::SystemdResolved {
         return Err("Bu sistemde adres ayarı otomatik değiştirilemiyor.".into());
     }
@@ -380,9 +389,37 @@ fn dns_duzelt() -> Result<String, String> {
     }
     let _ = std::fs::write(DNS_STATE, &onceki);
 
+    // 1. Önce şifreli DNS. Standart dışı kapıdan düz sorgudan daha sağlam:
+    //    sorgu içeriği görünmediği için alan adına göre süzülemiyor.
+    //    Uygulayıp **doğruluyoruz** — açık olması çalıştığı anlamına gelmez.
+    for (adres, ad) in SIFRELI_SUNUCULAR {
+        let c = ResolverConfig {
+            interface: arayuz.clone(),
+            upstream: adres.parse().expect("sabit adres"),
+            tls_host: Some((*ad).to_string()),
+        };
+        if sifreli_dns_dene(&c) {
+            let kalici =
+                resolver::write_persistent(&arayuz, c.upstream, Some(ad)).is_ok();
+            return Ok(format!(
+                "{ad} (şifreli{})",
+                if kalici {
+                    ", yeniden başlatmaya dayanıklı"
+                } else {
+                    ", yalnızca bu oturum"
+                }
+            ));
+        }
+    }
+
+    // 2. Şifreli yol tutmadıysa standart dışı kapıdan düz sorgu.
+    let Some((secilen, _)) = upstream::find_working(DEFAULT_CANARY, Duration::from_secs(4)) else {
+        return Err("Çalışan bir adres kaynağı bulunamadı.".into());
+    };
     let config = ResolverConfig {
         interface: arayuz,
         upstream: secilen.addr,
+        tls_host: None,
     };
     resolver::run(&config.apply_command()).map_err(|e| e.user_message().to_string())?;
 
@@ -394,7 +431,7 @@ fn dns_duzelt() -> Result<String, String> {
     // Çalışma anındaki ayar yeniden başlatınca kaybolur; kalıcı da yaz.
     // Başarısız olursa koruma yine çalışır, yalnızca her açılışta
     // komutu tekrarlamak gerekir.
-    let kalici = resolver::write_persistent(&config.interface, secilen.addr).is_ok();
+    let kalici = resolver::write_persistent(&config.interface, secilen.addr, None).is_ok();
     Ok(if kalici {
         format!("{} (yeniden başlatmaya dayanıklı)", secilen.label)
     } else {
@@ -417,6 +454,63 @@ fn geri_al() {
     println!("Temiz.");
 }
 
+/// Denenecek şifreli adres sunucuları.
+///
+/// Sertifika doğrulaması için adları da gerekiyor; `resolvectl` bunu
+/// `adres#ad` biçiminde alıyor.
+const SIFRELI_SUNUCULAR: &[(&str, &str)] = &[
+    ("1.1.1.1:853", "cloudflare-dns.com"),
+    ("9.9.9.9:853", "dns.quad9.net"),
+    ("8.8.8.8:853", "dns.google"),
+];
+
+/// Şifreli DNS'i uygular ve **gerçekten düzelttiğini doğrular**.
+///
+/// Kapının açık olması yetmez: sunucuya ulaşılıyor olabilir ama yanıt yine
+/// sansür adresi olabilir. Bu yüzden uygulayıp engelli bir adı çözüyoruz.
+/// Tutmazsa şifreleme kapatılıyor ve `false` dönüyor.
+fn sifreli_dns_dene(config: &ResolverConfig) -> bool {
+    let ad = &config.interface;
+    if resolver::run(&config.apply_command()).is_err() {
+        return false;
+    }
+    if resolver::run(&ResolverConfig::dnsovertls_command(ad, true)).is_err() {
+        return false;
+    }
+    let _ = resolver::run(&ResolverConfig::flush_command());
+    std::thread::sleep(Duration::from_millis(300));
+
+    if adres_temiz(SINAMA_ADI) {
+        return true;
+    }
+    let _ = resolver::run(&ResolverConfig::dnsovertls_command(ad, false));
+    false
+}
+
+/// Doğrulamada kullanılan, bu hatta engellendiği ölçülen ad.
+const SINAMA_ADI: &str = "discord.com";
+
+/// Verilen ad sansür adresi yerine gerçek adres döndürüyor mu?
+fn adres_temiz(ad: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(it) = (ad, 443).to_socket_addrs() else {
+        return false;
+    };
+    let v: Vec<_> = it
+        .filter_map(|a| match a.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            _ => None,
+        })
+        .collect();
+    if v.is_empty() {
+        return false;
+    }
+    !wire::is_censorship_response(&wire::DnsAnswer {
+        addresses: v,
+        rcode: 0,
+    })
+}
+
 /// Çalışan bir adres sunucusu bulur.
 ///
 /// [`dns_duzelt`] ile aynı arama, ama sistemi değiştirmiyor: adres yalnızca
@@ -425,15 +519,30 @@ fn dns_kaynagi_bul() -> Option<(std::net::SocketAddr, &'static str)> {
     upstream::find_working(DEFAULT_CANARY, Duration::from_secs(4)).map(|(u, _)| (u.addr, u.label))
 }
 
+/// Bir merdiven basamağı.
+#[derive(Debug, Clone, Copy)]
+enum Basamak {
+    /// İlk paketi bölme kipi.
+    Parcalama(trdpi_core::profile::FragmentationMode),
+    /// TCP tarafında sahte paket + düşük ömür.
+    ///
+    /// En sonda: her TCP paketini kullanıcı alanına taşıdığı için en pahalı
+    /// yöntem. Yalnızca diğerleri yetmediğinde açılıyor.
+    SahtePaket,
+}
+
 /// Denenecek teknikler, sırayla.
 ///
 /// İlk basamak ölçülen hatta yeten teknik; sonrakiler başka operatörlerde
-/// işe yarayabilecek olanlar. Sıra rastgele değil: önce hiçbir şey
-/// bozmayan, sonra daha müdahaleci olan.
-const MERDIVEN: [trdpi_core::profile::FragmentationMode; 3] = [
-    trdpi_core::profile::FragmentationMode::Off,
-    trdpi_core::profile::FragmentationMode::SniAware,
-    trdpi_core::profile::FragmentationMode::Fixed { position: 2 },
+/// işe yarayabilecek olanlar. Engelleme yöntemi operatörden operatöre
+/// değişiyor — kimi adrese, kimi alan adına bakıyor — o yüzden tek bir
+/// tekniğe bağlı kalmıyoruz. Sıra rastgele değil: önce hiçbir şey bozmayan
+/// ve ucuz olan, sonra daha müdahaleci ve pahalı olan.
+const MERDIVEN: [Basamak; 4] = [
+    Basamak::Parcalama(trdpi_core::profile::FragmentationMode::Off),
+    Basamak::Parcalama(trdpi_core::profile::FragmentationMode::SniAware),
+    Basamak::Parcalama(trdpi_core::profile::FragmentationMode::Fixed { position: 2 }),
+    Basamak::SahtePaket,
 ];
 
 /// Basamağın kullanıcıya gösterilecek adı.
@@ -441,6 +550,7 @@ fn basamak_adi(i: usize) -> &'static str {
     match i {
         1 => "site adını iki parçaya bölme",
         2 => "sabit konumdan bölme",
+        3 => "sahte paket gönderme",
         _ => "yeniden deneme",
     }
 }
@@ -605,6 +715,8 @@ fn dns_geri_al() {
     let Some(arayuz) = resolver::default_interface() else {
         return;
     };
+    // Şifreli DNS açtıysak kapatıyoruz; kapalıysa bu komut zararsız.
+    let _ = resolver::run(&ResolverConfig::dnsovertls_command(&arayuz, false));
     let onceki = std::fs::read_to_string(DNS_STATE).unwrap_or_default();
     match resolver::run(&ResolverConfig::revert_command(onceki.trim(), &arayuz)) {
         Ok(_) => {
@@ -833,8 +945,34 @@ mod testler {
     #[test]
     fn merdiven_kapaliyla_basliyor() {
         // İlk basamak hiçbir şey değiştirmemeli.
-        assert_eq!(MERDIVEN[0], trdpi_core::profile::FragmentationMode::Off);
-        assert_eq!(MERDIVEN.len(), 3);
+        assert!(matches!(
+            MERDIVEN[0],
+            Basamak::Parcalama(trdpi_core::profile::FragmentationMode::Off)
+        ));
+    }
+
+    #[test]
+    fn en_pahali_teknik_en_sonda() {
+        // Sahte paket her TCP paketini kullanıcı alanına taşıyor; en sonda
+        // olmalı ki gereksiz yere açılmasın.
+        assert!(matches!(
+            MERDIVEN[MERDIVEN.len() - 1],
+            Basamak::SahtePaket
+        ));
+        assert_eq!(
+            MERDIVEN
+                .iter()
+                .filter(|b| matches!(b, Basamak::SahtePaket))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn her_basamagin_adi_var() {
+        for i in 0..MERDIVEN.len() {
+            assert!(!basamak_adi(i).is_empty());
+        }
     }
 
     #[test]

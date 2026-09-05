@@ -25,6 +25,12 @@ pub struct QueueRules {
     pub queue_num: u16,
     /// QUIC için kuyruğa alınacak UDP kapıları.
     pub udp_ports: Vec<u16>,
+    /// TCP kuralları baştan kurulsun mu.
+    ///
+    /// Varsayılan kapalı: her TCP paketini kullanıcı alanına taşımak boşuna
+    /// gecikme demek. Bu teknik yalnızca başka yöntemler yetmediğinde,
+    /// çalışma anında açılıyor.
+    pub tcp_active: bool,
     /// Yakalanacak hedef portlar.
     pub ports: Vec<u16>,
 }
@@ -36,6 +42,7 @@ impl QueueRules {
             table: session.object_name("queue"),
             queue_num,
             udp_ports: Vec::new(),
+            tcp_active: false,
             ports: vec![443],
         }
     }
@@ -67,23 +74,8 @@ impl QueueRules {
             ]),
         ];
 
-        for port in &self.ports {
-            // `bypass`: dinleyen yoksa paket düşmez, geçer.
-            cmds.push(argv(&[
-                "add",
-                "rule",
-                "inet",
-                t,
-                "output",
-                "tcp",
-                "dport",
-                &port.to_string(),
-                "queue",
-                "flags",
-                "bypass",
-                "to",
-                &self.queue_num.to_string(),
-            ]));
+        if self.tcp_active {
+            cmds.extend(self.tcp_commands());
         }
 
         // QUIC. Yalnızca IPv4: sahte paketi ham IPv4 soketinden gönderiyoruz,
@@ -110,6 +102,34 @@ impl QueueRules {
         }
 
         cmds
+    }
+
+    /// TCP kapıları için kuyruk kuralları.
+    ///
+    /// Ayrı duruyor çünkü sonradan da eklenebiliyor: bu teknik yalnızca
+    /// gerektiğinde açılıyor ve o ana kadar kuyruğa TCP paketi gelmiyor.
+    pub fn tcp_commands(&self) -> Vec<Vec<String>> {
+        self.ports
+            .iter()
+            .map(|port| {
+                // `bypass`: dinleyen yoksa paket düşmez, geçer.
+                argv(&[
+                    "add",
+                    "rule",
+                    "inet",
+                    &self.table,
+                    "output",
+                    "tcp",
+                    "dport",
+                    &port.to_string(),
+                    "queue",
+                    "flags",
+                    "bypass",
+                    "to",
+                    &self.queue_num.to_string(),
+                ])
+            })
+            .collect()
     }
 
     /// Kuralları kaldıran `nft` çağrısı.
@@ -176,7 +196,11 @@ mod tests {
     use super::*;
 
     fn rules() -> QueueRules {
-        QueueRules::new(&SessionId::parse("a1b2c3d4e5f60000").unwrap(), 4200)
+        let mut r = QueueRules::new(&SessionId::parse("a1b2c3d4e5f60000").unwrap(), 4200);
+        // Bu testler kuyruk kuralının biçimine bakıyor; TCP tarafı artık
+        // sonradan açıldığı için burada açıkça istiyoruz.
+        r.tcp_active = true;
+        r
     }
 
     /// Motor çökerse internet kesilmemeli — `bypass` bunun güvencesi.
@@ -256,6 +280,54 @@ mod tests {
             assert!(deger
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tcp_testleri {
+    use super::*;
+
+    fn kurallar() -> QueueRules {
+        let mut r = QueueRules::new(&SessionId::new(), 4200);
+        r.ports = vec![443];
+        r.udp_ports = vec![443];
+        r
+    }
+
+    #[test]
+    fn tcp_varsayilan_olarak_kuyruga_alinmiyor() {
+        // Her TCP paketini kullanıcı alanına taşımak boşuna gecikme.
+        let cmds = kurallar().install_commands();
+        assert!(!cmds
+            .iter()
+            .any(|c| c.contains(&"tcp".to_string()) && c.contains(&"queue".to_string())));
+    }
+
+    #[test]
+    fn udp_kurali_yine_de_kuruluyor() {
+        let cmds = kurallar().install_commands();
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains(&"udp".to_string()) && c.contains(&"queue".to_string())));
+    }
+
+    #[test]
+    fn acilinca_tcp_kurali_uretiliyor() {
+        let mut r = kurallar();
+        r.tcp_active = true;
+        let cmds = r.install_commands();
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains(&"tcp".to_string()) && c.contains(&"queue".to_string())));
+    }
+
+    #[test]
+    fn sonradan_eklenen_kural_ayni_tabloda() {
+        let r = kurallar();
+        for c in r.tcp_commands() {
+            assert!(c.contains(&r.table), "yabancı tabloya kural: {c:?}");
+            assert!(c.contains(&"bypass".to_string()), "bypass yok: {c:?}");
         }
     }
 }

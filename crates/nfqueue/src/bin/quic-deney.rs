@@ -11,8 +11,10 @@
 //! Kullanım:  quic-deney <teknik> <saniye>
 //!   gecir            hiçbir şey yapma (taban ölçümü)
 //!   parcala:<n>      IP parçalarına böl; ilk parça UDP başlığı + n bayt
-//!   sahte:<ttl>      düşük ömürlü bozuk kopya gönder, sonra gerçeği geçir
-//!   sahte-parcala:<ttl>:<n>   ikisi birden
+//!   omur:<ttl>       düşük ömürlü sahte kopya
+//!   toplam           sağlama toplamı bozuk sahte kopya (ömürden bağımsız)
+//!   ikisi:<ttl>      ömür + bozuk toplam
+//!   gecerli:<ttl>    masum adlı, gerçekten çözülebilir Initial
 //!
 //! Kural `bypass` bayrağıyla kurulur: program çökerse paketler düşmez.
 
@@ -70,8 +72,7 @@ fn main() {
 enum Plan {
     Gecir,
     Parcala { kesim: usize },
-    Sahte { ttl: u8 },
-    SahteParcala { ttl: u8, kesim: usize },
+    Sahte { bozma: trdpi_nfqueue::quic::Bozma },
 }
 
 impl Plan {
@@ -82,10 +83,17 @@ impl Plan {
             ["parcala", n] => Some(Plan::Parcala {
                 kesim: hizala(n.parse().ok()?),
             }),
-            ["sahte", t] => Some(Plan::Sahte { ttl: t.parse().ok()? }),
-            ["sahte-parcala", t, n] => Some(Plan::SahteParcala {
-                ttl: t.parse().ok()?,
-                kesim: hizala(n.parse().ok()?),
+            ["omur", t] => Some(Plan::Sahte {
+                bozma: trdpi_nfqueue::quic::Bozma::Omur(t.parse().ok()?),
+            }),
+            ["toplam"] => Some(Plan::Sahte {
+                bozma: trdpi_nfqueue::quic::Bozma::Toplam,
+            }),
+            ["ikisi", t] => Some(Plan::Sahte {
+                bozma: trdpi_nfqueue::quic::Bozma::OmurVeToplam(t.parse().ok()?),
+            }),
+            ["gecerli", t] => Some(Plan::Sahte {
+                bozma: trdpi_nfqueue::quic::Bozma::GecerliInitial(t.parse().ok()?),
             }),
             _ => None,
         }
@@ -104,13 +112,6 @@ struct Sayaclar {
     initial: AtomicU64,
     islenen: AtomicU64,
     hata: AtomicU64,
-}
-
-/// Paket bir QUIC Initial mi?
-///
-/// Uzun başlık biti açık, sabit bit açık, tip alanı Initial (00) ve sürüm 1.
-fn quic_initial_mi(udp_yuk: &[u8]) -> bool {
-    udp_yuk.len() >= 5 && (udp_yuk[0] & 0xF0) == 0xC0 && udp_yuk[1..5] == [0, 0, 0, 1]
 }
 
 /// IPv4 başlığının uzunluğu.
@@ -169,40 +170,6 @@ fn yaz_basligi(p: &mut [u8], bas: usize, uzaklik: u16, devam_var: bool) {
     p[10..12].copy_from_slice(&cs.to_be_bytes());
 }
 
-/// Düşük ömürlü, içeriği bozulmuş bir kopya üretir.
-///
-/// Hedefe ulaşmadan ölmesi için TTL düşük; DPI'nın gördüğü ilk Initial bu
-/// olur. İçerik bozulduğu için gerçek bir bağlantı kurmaz.
-fn sahte_uret(buf: &[u8], ttl: u8, tohum: u64) -> Option<Vec<u8>> {
-    let bas = ip_basi(buf)?;
-    let toplam = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-    if toplam > buf.len() || toplam < bas + 8 + 5 {
-        return None;
-    }
-    let mut p = buf[..toplam].to_vec();
-    p[8] = ttl;
-
-    // QUIC yükünün bağlantı kimliğini ve gövdesini değiştiriyoruz; uzunluk
-    // aynı kalıyor ki DPI'ya aynı boyda bir Initial görünsün.
-    let yuk_bas = bas + 8;
-    let mut s = tohum;
-    for b in p[yuk_bas + 5..toplam].iter_mut() {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        *b = (s >> 33) as u8;
-    }
-
-    // UDP sağlama toplamı: IPv4'te sıfır bırakmak "hesaplanmadı" demektir ve
-    // geçerlidir. Bozuk bir toplamla göndermektense sıfırlıyoruz.
-    p[bas + 6] = 0;
-    p[bas + 7] = 0;
-
-    p[10] = 0;
-    p[11] = 0;
-    let cs = trdpi_nfqueue::packet::checksum(&p[..bas]);
-    p[10..12].copy_from_slice(&cs.to_be_bytes());
-    Some(p)
-}
-
 #[cfg(target_os = "linux")]
 fn calis(
     plan: Plan,
@@ -245,32 +212,28 @@ fn calis(
             sayac.gorulen.fetch_add(1, Ordering::Relaxed);
 
             let buf = msg.get_payload().to_vec();
-            let initial = ip_basi(&buf)
-                .and_then(|b| buf.get(b + 8..))
-                .is_some_and(quic_initial_mi);
+            let initial = trdpi_nfqueue::quic::udp_payload_offset(&buf)
+                .and_then(|b| buf.get(b..))
+                .is_some_and(trdpi_nfqueue::quic::is_initial);
 
             let mut dusur = false;
             if initial {
                 sayac.initial.fetch_add(1, Ordering::Relaxed);
                 tohum = tohum.wrapping_add(0x9E3779B97F4A7C15);
 
-                let (sahte_ttl, kesim) = match plan {
+                let (bozma, kesim) = match plan {
                     Plan::Gecir => (None, None),
                     Plan::Parcala { kesim } => (None, Some(kesim)),
-                    Plan::Sahte { ttl } => (Some(ttl), None),
-                    Plan::SahteParcala { ttl, kesim } => (Some(ttl), Some(kesim)),
+                    Plan::Sahte { bozma } => (Some(bozma), None),
                 };
 
-                if let Some(ttl) = sahte_ttl {
-                    match sahte_uret(&buf, ttl, tohum) {
-                        Some(s) => {
-                            if gonderici.send(&s).is_err() {
-                                sayac.hata.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        None => {
-                            sayac.hata.fetch_add(1, Ordering::Relaxed);
-                        }
+                if let Some(b) = bozma {
+                    let gonderildi = trdpi_nfqueue::quic::build_fake(&buf, b, tohum)
+                        .is_some_and(|s| gonderici.send(&s).is_ok());
+                    if gonderildi {
+                        sayac.islenen.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        sayac.hata.fetch_add(1, Ordering::Relaxed);
                     }
                 }
 
@@ -284,8 +247,6 @@ fn calis(
                     } else {
                         sayac.hata.fetch_add(1, Ordering::Relaxed);
                     }
-                } else if sahte_ttl.is_some() {
-                    sayac.islenen.fetch_add(1, Ordering::Relaxed);
                 }
             }
 

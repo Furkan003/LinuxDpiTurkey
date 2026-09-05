@@ -81,6 +81,12 @@ Trafik yerel bir motordan geçiyor ama motor veriyi kopyalamıyor; çekirdek iki
 
 Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor.
 
+Adres soruları **şifreli** gidiyor (DNS-over-TLS). Bu, standart dışı kapıdan düz sorgu göndermekten daha sağlam: sorgunun içi görünmediği için alan adına göre süzülemiyor. Şifreli yol tutmazsa standart dışı kapıya, o da tutmazsa yönlendirme kuralına düşülüyor.
+
+Uygulama şifreli yolu **kurup doğruluyor** — kapının açık olması çalıştığı anlamına gelmiyor. Engellendiği bilinen bir adı çözüp yanıtın sansür adresi olup olmadığına bakıyor; değilse kabul ediyor, öyleyse geri alıp bir sonrakini deniyor.
+
+Ölçüldü: şifresiz `discord.com` → `195.175.254.2` (sansür adresi), şifreliyken → `162.159.128.233` ve diğer gerçek adresler.
+
 Ayar **bağlantı bazında** uygulanıyor ve açılışta aynı komutu tekrarlayan küçük bir systemd birimiyle kalıcılaşıyor. Genel (global) ayar dosyası yazmak işe yaramıyordu: systemd-resolved sorguları bağlantının kendi çözümleyicisine yönlendirdiği için, DHCP'den adres alan her kurulumda genel ayar hiç devreye girmiyordu. Ölçüldü ve düzeltildi.
 
 **2. QUIC engeli.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni ve daha hızlı bağlantı yöntemi.
@@ -92,7 +98,11 @@ Bu yolun nasıl engellendiğini ölçtük: **DPI, QUIC Initial paketini çözüp
 | Discord'un IP'si + `cloudflare-quic.com` adı | el sıkışma **0.75 sn** |
 | Discord'un IP'si + `discord.com` adı | **zaman aşımı** |
 
-**Uygulama bu engeli aşıyor.** Gerçek paketten hemen önce, hedefe ulaşamayacak kadar düşük ömürlü bozuk bir Initial gönderiliyor. Denetim kararını o pakete göre veriyor; sahte paket yolda ölüyor, gerçek paket geçiyor.
+**Uygulama bu engeli aşıyor.** Gerçek paketten hemen önce, hedefe ulaşamayacak kadar düşük ömürlü ikinci bir Initial gönderiliyor. Denetim kararını o pakete göre veriyor; sahte paket yolda ölüyor, gerçek paket geçiyor.
+
+Sahte paket **geçerli** bir Initial: gerçekten çözülebiliyor ve içinde masum bir sunucu adı var. Bu önemli, çünkü gövdesi rastgele olan bir sahteyi denetim "çözemedim, karar vermem" diye yok sayabilir — o zaman teknik ölür. Geçerli paketi çözüyor, meşru bir ad görüyor ve geçiriyor.
+
+Bunun için gereken kripto (SHA-256, HMAC, HKDF, AES-128-GCM) kütüphane eklemeden yazıldı: motor root çalışıyor ve her dolaylı paket root yetkisiyle çalışan koda giriyor. Üretilen anahtarlar RFC 9001'in resmî test vektörleriyle birebir doğrulanıyor.
 
 Ölçüldü — Discord'a HTTP/3 isteği:
 
@@ -105,7 +115,16 @@ Aynı sayfa korunan TCP yolundan 0.88 saniye sürüyor. Yani engeli aşmak, kapa
 
 Sahte paketin ömrü ayarlanabilir; varsayılan iki değer (4 ve 8) gönderiliyor, çünkü denetimin kaç sıçrama uzakta olduğu ağdan ağa değişir. Bu hatta ölçüm: TTL 1-2 çalışmıyor, **3-12 arası 18 denemenin 18'i başarılı.**
 
-IP parçalama da denendi ve **işe yaramadı** — bu denetim parçaları birleştiriyor.
+Denenip elenenler, ölçümle:
+
+| Yöntem | Sonuç |
+|---|---|
+| IP parçalama | işe yaramadı — denetim parçaları birleştiriyor |
+| bozuk sağlama toplamı tek başına | işe yaramadı — denetim toplamı doğruluyor |
+| aynı pakete ömür + bozuk toplam | **çalışanı da bozuyor** |
+| geçerli Initial + düşük ömür | **6/6 başarılı** |
+
+Bozuk toplam listede kalıyor: toplamı doğrulamayan denetimlerde işe yarayabilir ve ayrı bir paket olarak gönderildiği için burada zarar vermediği ölçüldü.
 
 Motor QUIC'i aşamazsa (çekirdek desteği ya da yetki yoksa) eski davranışa düşülür: UDP 443 reddedilir ve uygulamalar anında korunan TCP yoluna geçer. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine hiçbir durumda dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile QUIC'i tamamen serbest bırakabilir.
 
@@ -184,6 +203,7 @@ Bağlantılar kurulmuyorsa kendiliğinden bir sonraki tekniğe geçiyor — en a
 | 1 | yeniden deneme (varsayılan) |
 | 2 | site adını iki parçaya bölme |
 | 3 | sabit konumdan bölme |
+| 4 | sahte paket gönderme |
 
 Hepsi tükenirse bunu açıkça söylüyor: *"Denenecek teknik kalmadı ve bağlantılar hâlâ kurulamıyor."*
 
@@ -236,7 +256,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 297 test
+cargo test                                   # 337 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -274,6 +294,8 @@ Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için 
 - [x] Root olarak çalışan uygulamalar da kapsamda
 - [x] Teknik yükseltme merdiveni
 - [x] systemd-resolved olmayan dağıtımlar için adres çevirme
+- [x] Şifreli adres çözümleme (DNS-over-TLS)
+- [x] Geçerli sahte QUIC Initial (kütüphanesiz kripto)
 - [x] Gerçek zamanlı yol ölçümü
 - [ ] Açılışta otomatik başlatma
 - [ ] AppImage ve .rpm
