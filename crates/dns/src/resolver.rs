@@ -55,6 +55,17 @@ impl ResolverConfig {
     pub fn query_command(interface: &str) -> Vec<String> {
         argv(&["dns", interface])
     }
+
+    /// Önbelleği boşaltan komut.
+    ///
+    /// Çözümleyiciyi değiştirmek önbellekteki eski yanıtları silmiyor:
+    /// sansür adresi orada duruyor ve ilk istekler yine oraya gidiyor.
+    /// Üstelik sinkhole TCP'yi kabul edip TLS'i kestiği için yedek adres
+    /// yolu da devreye girmiyor — bağlantı kurulmuş sayılıyor.
+    /// Ölçüldü: temizlemeden ilk tur `000`, ikinci tur `200`.
+    pub fn flush_command() -> Vec<String> {
+        argv(&["flush-caches"])
+    }
 }
 
 /// `adres:kapı` biçimi. IPv6 köşeli parantez ister.
@@ -266,9 +277,10 @@ mod exec {
                 Err(e) => hata = Some(ResolverError::Failed(e.to_string())),
             }
         }
-        if birim_vardi {
-            let _ = systemctl(&["daemon-reload"]);
-        }
+        // `daemon-reload` yok. `disable` bağlantıyı zaten kaldırdı, dosya da
+        // silindi; systemd bir sonraki açılışta durumu yeniden okuyor.
+        // Yeniden yükleme durdurmayı yarım saniyeden fazla uzatıyordu ve
+        // hızlı durdurma bu uygulamada bilerek korunan bir davranış.
         match hata {
             Some(e) => Err(e),
             None => Ok(()),
@@ -527,5 +539,15 @@ mod yol_testleri {
     fn hicbiri_yoksa_en_yaygini() {
         // Yazarken bulamasak da birim geçerli kalmalı.
         assert_eq!(resolvectl_path(|_| false), "/usr/bin/resolvectl");
+    }
+}
+
+#[cfg(test)]
+mod onbellek_testleri {
+    use super::*;
+
+    #[test]
+    fn onbellek_temizleme_komutu() {
+        assert_eq!(ResolverConfig::flush_command(), vec!["flush-caches"]);
     }
 }

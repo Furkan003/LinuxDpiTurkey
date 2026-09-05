@@ -286,6 +286,11 @@ fn dns_duzelt() -> Result<String, String> {
     };
     resolver::run(&config.apply_command()).map_err(|e| e.user_message().to_string())?;
 
+    // Önbellekte sansür adresi kalmasın; kalırsa yeni çözümleyici hiçbir işe
+    // yaramaz. Başarısız olursa koruma yine çalışır, yalnızca ilk birkaç
+    // istek eski yanıtı görebilir.
+    let _ = resolver::run(&ResolverConfig::flush_command());
+
     // Çalışma anındaki ayar yeniden başlatınca kaybolur; kalıcı da yaz.
     // Başarısız olursa koruma yine çalışır, yalnızca her açılışta
     // komutu tekrarlamak gerekir.

@@ -51,7 +51,7 @@ pub fn recommend(results: &[DiagnosticResult]) -> Recommendation {
             &[
                 "Korumayı başlat:  sudo trdpi",
                 "Çalışan bir adres kaynağı kendiliğinden bulunur; elle ayar gerekmez.",
-                "Elle 1.1.1.1 veya 8.8.8.8 yazmak çoğu zaman yetmez: bu hatlarda                  53. kapı da filtrelenir.",
+                "Elle 1.1.1.1 yazmak yetmez: bu hatlarda 53. kapı da filtreli.",
                 "Sorun sürerse engel başka yerde demektir; sonucu bildir.",
             ],
         );
@@ -126,7 +126,7 @@ pub fn recommend(results: &[DiagnosticResult]) -> Recommendation {
     if fp.quic_blocked {
         return Recommendation::new(
             "Bağlantın çalışıyor ama uygulamalar boşuna bekliyor.",
-            "Yeni bağlantı yöntemi (QUIC) yanıt vermiyor. Uygulamalar önce onu              deniyor, zaman aşımını bekliyor ve ancak sonra çalışan yola geçiyor.              Gördüğün yavaşlık bu bekleme.",
+            "Yeni bağlantı yöntemi (QUIC) yanıt vermiyor. Uygulamalar önce onu deniyor, zaman aşımını bekliyor ve ancak sonra çalışan yola geçiyor. Gördüğün yavaşlık bu bekleme.",
             &[
                 "sudo trdpi — QUIC kapatılır, uygulamalar anında çalışan yola düşer.",
                 "Oyunların gerçek zamanlı bağlantısına dokunulmaz.",
@@ -139,7 +139,7 @@ pub fn recommend(results: &[DiagnosticResult]) -> Recommendation {
     if realtime_kapali(results) {
         return Recommendation::new(
             "Siteler açılıyor ama gerçek zamanlı bağlantı kurulamıyor.",
-            "Oyunların ve sesli görüşmenin kullandığı yol yanıt vermiyor. Bu yol              korumanın kapsamı dışında: dokunmuyoruz, dolayısıyla açmıyoruz da.",
+            "Oyunların ve sesli görüşmenin kullandığı yol yanıt vermiyor. Bu yol korumanın kapsamı dışında: dokunmuyoruz, dolayısıyla açmıyoruz da.",
             &[
                 "Ağında UDP kısıtlaması olabilir; modem/ağ ayarlarını kontrol et.",
                 "Kurumsal ya da mobil bir ağdaysan bu kısıtlama oradan geliyor olabilir.",
@@ -356,6 +356,54 @@ mod tests {
                 assert!(
                     r.summary.contains("belirtisi yok"),
                     "{c}: adım da yok, temiz de demiyor — kullanıcı ne yapacak?"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod metin_testleri {
+    use super::*;
+    use trdpi_core::{Classification, DiagnosticKind, DiagnosticResult};
+
+    fn sonuc(sinif: Classification) -> DiagnosticResult {
+        DiagnosticResult {
+            kind: DiagnosticKind::TlsHandshake,
+            target: "deneme".into(),
+            success: sinif == Classification::Healthy,
+            latency: Some(std::time::Duration::from_millis(1)),
+            classification: sinif,
+            detail: None,
+        }
+    }
+
+    /// Kaynakta satır bölmek için kullanılan ters bölü, arada kalan girintiyi
+    /// metne taşıyabiliyor. Kullanıcıya "bu hatlarda        53. kapı" gibi bir
+    /// cümle gitmişti; bir daha gitmesin.
+    #[test]
+    fn kullaniciya_giden_metinlerde_arka_arkaya_bosluk_yok() {
+        let durumlar = [
+            Classification::Healthy,
+            Classification::Degraded,
+            Classification::Throttled,
+            Classification::QuicBlocked,
+            Classification::DnsTampered,
+            Classification::TcpReset,
+            Classification::TlsInterference,
+            Classification::Timeout,
+            Classification::Unknown,
+        ];
+        for d in durumlar {
+            let r = recommend(&[sonuc(d)]);
+            let mut metinler = vec![r.summary.clone(), r.reason.clone()];
+            metinler.extend(r.steps.iter().cloned());
+            for m in metinler {
+                // İki boşluk hizalama için kullanılıyor; üç ve fazlası
+                // yalnızca kaynaktaki girintinin sızmasıyla oluşuyor.
+                assert!(
+                    !m.contains("   "),
+                    "{d:?} durumunda metne girinti sızmış: {m:?}"
                 );
             }
         }
