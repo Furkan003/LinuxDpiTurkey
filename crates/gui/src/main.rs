@@ -113,6 +113,14 @@ struct Uygulama {
     /// Süren yetki çağrısı. Sonucu beklenmezse hatası kaybolur ve kullanıcı
     /// 45 saniye "lütfen bekle" görüp sebebini hiç öğrenemez.
     islem: Option<std::process::Child>,
+    /// Yerini yenisine bırakmış ama henüz ölmemiş yetki çağrıları.
+    ///
+    /// Başlatma çağrısı koruma boyunca yaşıyor; DURDUR'a basıldığında yerine
+    /// durdurma çağrısı geçiyor. Eski tutamak öylece bırakılırsa süreç
+    /// ölünce **zombi** kalıyor: adı hâlâ `trdpi`, komut satırı boş. Arayüz
+    /// bunu çalışan koruma sanıp ekranı "Koruma açık"a döndürüyordu.
+    /// Devşirmek için elimizde tutuyoruz.
+    gecmis: Vec<std::process::Child>,
     /// Geçiş zaman aşımına uğrarsa kullanıcıya söylenecek şey.
     ///
     /// Bunu söylemezsek 45 saniye "lütfen bekle" gördükten sonra ekranın eski
@@ -220,6 +228,10 @@ adres çözümleme: {}",
     fn tazele(&mut self) {
         self.olcumu_al();
         self.yetkiyi_kontrol_et();
+        // Biten eski çağrıları devşiriyoruz: devşirilmeyen süreç zombi
+        // olarak /proc'ta kalıyor ve `trdpi` adını taşımaya devam ediyor.
+        self.gecmis
+            .retain_mut(|c| matches!(c.try_wait(), Ok(None)));
         if self.durum == Durum::PkexecYok {
             return;
         }
@@ -284,6 +296,11 @@ adres çözümleme: {}",
             Ok((cocuk, yeni)) => {
                 self.durum = yeni;
                 self.gecis_basladi = Some(Instant::now());
+                // Çalışmakta olan başlatma çağrısını **bırakmıyoruz**;
+                // bırakılan süreç ölünce zombi kalıyor ve koruma sanılıyor.
+                if let Some(eski) = self.islem.take() {
+                    self.gecmis.push(eski);
+                }
                 self.islem = Some(cocuk);
             }
             Err(e) => {
@@ -412,6 +429,7 @@ fn main() {
         durum: baslangic,
         gecis_basladi: None,
         islem: None,
+        gecmis: Vec::new(),
         not: None,
         isik,
         baslik,

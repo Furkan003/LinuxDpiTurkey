@@ -54,10 +54,18 @@ const KORUMA_DISI: [&str; 11] = [
 /// sayılıyor: yanlışlıkla "çalışmıyor" demek, kullanıcının korumayı
 /// kapattığını sanmasına yol açar — yanlış yönde hata yapmıyoruz.
 pub fn is_protection_cmdline(cmdline: &str) -> bool {
-    !cmdline
-        .split_whitespace()
-        .skip(1) // program adı
-        .any(|a| KORUMA_DISI.iter().any(|k| a == *k || a.starts_with("--acilista")))
+    let mut parcalar = cmdline.split_whitespace();
+    // Boş komut satırı zombi demektir: ölmüş ama devşirilmemiş bir sürecin
+    // `/proc/<pid>/cmdline` dosyası boşalıyor, ama `comm` hâlâ "trdpi"
+    // diyor. Bunu koruma sayıyorduk. Gerçekte olan: kullanıcı DURDUR'a
+    // basınca durdurma başarıyla bitiyor, ama arkada kalan zombi yüzünden
+    // arayüz "hâlâ çalışıyor" görüyor, 45 saniye bekleyip ekranı "Koruma
+    // açık"a döndürüyordu. Kullanıcının aylardır "kendiliğinden geri
+    // açılıyor" dediği şey buydu; sunucuda ölçüldü.
+    if parcalar.next().is_none() {
+        return false;
+    }
+    !parcalar.any(|a| KORUMA_DISI.iter().any(|k| a == *k || a.starts_with("--acilista")))
 }
 
 /// Motorun anlık durumunu yazdığı dosya.
@@ -189,6 +197,18 @@ mod cmdline_testleri {
         assert!(!is_protection_cmdline("/usr/bin/trdpi --olc"));
     }
 
+    /// Zombi süreçler koruma sayılmamalı.
+    ///
+    /// Başlatma çağrısı ölünce arkada zombi kalıyordu; komut satırı boş,
+    /// adı hâlâ `trdpi`. Ekran durdurmadan sonra "Koruma açık"a dönüyordu.
+    #[test]
+    fn bos_komut_satiri_koruma_degil() {
+        assert!(!is_protection_cmdline(""));
+        assert!(!is_protection_cmdline("   "));
+        assert!(!is_protection_cmdline("
+"));
+    }
+
     #[test]
     fn acilista_komutlari_koruma_degil() {
         assert!(!is_protection_cmdline("/usr/bin/trdpi --acilista"));
@@ -203,8 +223,12 @@ mod cmdline_testleri {
         assert!(is_protection_cmdline("/usr/bin/trdpi --yeni-bir-sey"));
     }
 
+    /// Boş girdi eskiden koruma sayılıyordu — "bilinmeyen bayrak koruma
+    /// sayılır" kuralının yan etkisiydi. Ama boş komut satırı bir bayrak
+    /// değil, ölmüş bir süreç: yukarıdaki [`bos_komut_satiri_koruma_degil`]
+    /// bunu ölçüyor. Burada kalan tek soru panik yapmaması.
     #[test]
     fn bos_girdi_panik_yapmiyor() {
-        assert!(is_protection_cmdline(""));
+        let _ = is_protection_cmdline("");
     }
 }
