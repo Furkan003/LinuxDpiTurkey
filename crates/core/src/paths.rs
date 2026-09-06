@@ -28,6 +28,38 @@ pub const PIDFILE_FALLBACK: &str = "/var/lib/trdpi/pid";
 /// sürecin adına da bakılır.
 pub const PROCESS_NAME: &str = "trdpi";
 
+/// Koruma **çalıştırmayan** alt komutlar.
+///
+/// Hepsi `trdpi` adını taşıyor: süreç adına bakan bir kontrol durdurma
+/// komutunu, gözcüyü ya da bir ölçümü çalışan koruma sanıyor. Bu, arayüzde
+/// "durduruluyor" ekranında takılmaya ve 45 saniye sonra ekranın kendiliğinden
+/// "Koruma açık"a dönmesine yol açıyordu.
+const KORUMA_DISI: [&str; 11] = [
+    "--geri",
+    "--durdur",
+    "--temizle",
+    "--bekci",
+    "--dene",
+    "--rapor",
+    "--olc",
+    "--surum",
+    "--yardim",
+    "--acilista",
+    "-h",
+];
+
+/// Bu komut satırı koruma çalıştıran bir kopyaya mı ait?
+///
+/// `cmdline` boşlukla ayrılmış argümanlar. Bilinmeyen bir bayrak koruma
+/// sayılıyor: yanlışlıkla "çalışmıyor" demek, kullanıcının korumayı
+/// kapattığını sanmasına yol açar — yanlış yönde hata yapmıyoruz.
+pub fn is_protection_cmdline(cmdline: &str) -> bool {
+    !cmdline
+        .split_whitespace()
+        .skip(1) // program adı
+        .any(|a| KORUMA_DISI.iter().any(|k| a == *k || a.starts_with("--acilista")))
+}
+
 /// Motorun anlık durumunu yazdığı dosya.
 ///
 /// Arayüz motorla doğrudan konuşmuyor; sayaçları ve o an kullanılan tekniği
@@ -127,5 +159,52 @@ baglanti=5
     #[test]
     fn bos_icerik_panik_yapmiyor() {
         assert_eq!(status_field("", "baglanti"), None);
+    }
+}
+
+#[cfg(test)]
+mod cmdline_testleri {
+    use super::*;
+
+    #[test]
+    fn parametresiz_calistirma_korumadir() {
+        assert!(is_protection_cmdline("/usr/bin/trdpi"));
+    }
+
+    #[test]
+    fn sure_ile_calistirma_korumadir() {
+        assert!(is_protection_cmdline("/usr/bin/trdpi --sure 120"));
+        assert!(is_protection_cmdline("/usr/bin/trdpi --quic-gecir"));
+    }
+
+    /// Asıl hata buydu: bunların hepsi `trdpi` adını taşıyor.
+    #[test]
+    fn durdurma_gozcu_ve_olcum_koruma_degil() {
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --geri"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --durdur"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --temizle"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --bekci 42 trdpi_redirect_x"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --dene discord.com"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --rapor"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --olc"));
+    }
+
+    #[test]
+    fn acilista_komutlari_koruma_degil() {
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --acilista"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --acilista-ac"));
+        assert!(!is_protection_cmdline("/usr/bin/trdpi --acilista-kapat"));
+    }
+
+    /// Bilinmeyen bayrakta koruma varsayıyoruz: yanlış "kapalı" demek,
+    /// kullanıcının korumayı kapalı sanmasına yol açardı.
+    #[test]
+    fn bilinmeyen_bayrak_koruma_sayiliyor() {
+        assert!(is_protection_cmdline("/usr/bin/trdpi --yeni-bir-sey"));
+    }
+
+    #[test]
+    fn bos_girdi_panik_yapmiyor() {
+        assert!(is_protection_cmdline(""));
     }
 }

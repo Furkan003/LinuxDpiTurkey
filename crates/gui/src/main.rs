@@ -108,6 +108,11 @@ struct Uygulama {
     dugme: Button,
     /// Motor çalışırken sayaçları gösteren satır.
     ozet: Frame,
+    /// Geçiş zaman aşımına uğrarsa kullanıcıya söylenecek şey.
+    ///
+    /// Bunu söylemezsek 45 saniye "lütfen bekle" gördükten sonra ekranın eski
+    /// haline dönmesi "koruma kendiliğinden geri açıldı" gibi görünüyor.
+    not: Option<String>,
     /// Site ölçümünün sonucu; arka planda dolduruluyor.
     sonuc: Frame,
     /// Ölçüm arka planda sürüyor mu ve bittiyse sonucu.
@@ -131,7 +136,13 @@ impl Uygulama {
             self.dugme.deactivate();
         }
 
-        if let Some(g) = self
+        // Sıra önemli: bir şey ters gittiyse kullanıcının önce onu görmesi
+        // gerekiyor, güncelleme haberini değil.
+        if let Some(n) = &self.not {
+            self.alt_bilgi.set_label(n);
+            self.alt_bilgi
+                .set_label_color(Color::from_rgb(220, 100, 90));
+        } else if let Some(g) = self
             .guncelleme
             .lock()
             .ok()
@@ -194,12 +205,24 @@ adres çözümleme: {}",
                     .gecis_basladi
                     .is_some_and(|t| t.elapsed() > GECIS_SINIRI)
                 {
+                    let bekleyen = self.durum;
                     self.durum = if calisiyor {
                         Durum::Acik
                     } else {
                         Durum::Kapali
                     };
                     self.gecis_basladi = None;
+                    // Ekran eski haline dönüyor; sebebini söylemezsek
+                    // "kendiliğinden geri açıldı" gibi görünüyor.
+                    self.not = match (bekleyen, calisiyor) {
+                        (Durum::Durduruluyor, true) => {
+                            Some("Durdurulamadı — parola penceresi kapatılmış olabilir.".into())
+                        }
+                        (Durum::Baslatiliyor, false) => {
+                            Some("Başlatılamadı — parola penceresi kapatılmış olabilir.".into())
+                        }
+                        _ => None,
+                    };
                 }
             }
             // Motor dışarıdan başlatılmış ya da durdurulmuş olabilir.
@@ -211,6 +234,8 @@ adres çözümleme: {}",
     }
 
     fn dugmeye_basildi(&mut self) {
+        // Yeni bir deneme başlıyor; eski uyarı ekranda kalmasın.
+        self.not = None;
         let sonuc = match self.durum {
             Durum::Kapali => engine::start().map(|()| Durum::Baslatiliyor),
             Durum::Acik => engine::stop().map(|()| Durum::Durduruluyor),
@@ -345,6 +370,7 @@ fn main() {
     let durum = Rc::new(RefCell::new(Uygulama {
         durum: baslangic,
         gecis_basladi: None,
+        not: None,
         isik,
         baslik,
         aciklama,

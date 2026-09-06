@@ -16,12 +16,19 @@ pub struct Instance {
     pub cmdline: String,
 }
 
-/// `/proc` içindeki bir girdinin bize ait olup olmadığını söyler.
+/// `/proc` içindeki bir girdinin **koruma çalıştıran** bir kopyamız olup
+/// olmadığını söyler.
+///
+/// Komut satırı da bakılıyor: durdurma komutu, gözcü süreç ve ölçümler de
+/// `trdpi` adını taşıyor. Yalnızca ada bakmak, `--durdur`'un gözcüyü de
+/// "kopya" sayıp öldürmesine ve sayının şişmesine yol açıyordu.
 ///
 /// Saf fonksiyon: dosya sistemine dokunmaz, böylece test edilebilir.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub fn is_own_process(comm: &str, pid: u32, self_pid: u32) -> bool {
-    pid != self_pid && comm.trim() == PROCESS_NAME
+pub fn is_own_process(comm: &str, pid: u32, self_pid: u32, cmdline: &str) -> bool {
+    pid != self_pid
+        && comm.trim() == PROCESS_NAME
+        && trdpi_core::paths::is_protection_cmdline(cmdline)
 }
 
 /// Sürecin `/proc/<pid>/comm` içindeki adı.
@@ -133,17 +140,17 @@ pub fn find_others() -> Vec<Instance> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        if !is_own_process(&comm, pid, self_pid) {
-            continue;
-        }
-        if bulunan.iter().any(|i: &Instance| i.pid == pid) {
-            continue;
-        }
         let cmdline = fs::read_to_string(entry.path().join("cmdline"))
             .unwrap_or_default()
             .replace('\0', " ")
             .trim()
             .to_string();
+        if !is_own_process(&comm, pid, self_pid, &cmdline) {
+            continue;
+        }
+        if bulunan.iter().any(|i: &Instance| i.pid == pid) {
+            continue;
+        }
         bulunan.push(Instance { pid, cmdline });
     }
     bulunan
@@ -220,13 +227,13 @@ mod tests {
     /// Kendimizi kendi kopyamız sanmamalıyız; sanırsak kendimizi öldürürüz.
     #[test]
     fn kendimizi_kopya_saymiyoruz() {
-        assert!(!is_own_process("trdpi\n", 100, 100));
+        assert!(!is_own_process("trdpi\n", 100, 100, "/usr/bin/trdpi"));
     }
 
     #[test]
     fn ayni_isimli_baska_surec_bulunuyor() {
-        assert!(is_own_process("trdpi\n", 101, 100));
-        assert!(is_own_process("trdpi", 101, 100));
+        assert!(is_own_process("trdpi\n", 101, 100, "/usr/bin/trdpi"));
+        assert!(is_own_process("trdpi", 101, 100, "/usr/bin/trdpi"));
     }
 
     /// Adı bize benzeyen yabancı süreçlere dokunulmamalı.
@@ -234,7 +241,7 @@ mod tests {
     fn benzer_isimli_yabanci_surecler_alinmiyor() {
         for yabanci in ["trdpi-dns", "trdpix", "mytrdpi", "sshd", "systemd"] {
             assert!(
-                !is_own_process(yabanci, 101, 100),
+                !is_own_process(yabanci, 101, 100, "/usr/bin/trdpi"),
                 "{yabanci} bize ait sayıldı"
             );
         }
@@ -242,8 +249,8 @@ mod tests {
 
     #[test]
     fn bos_isim_alinmiyor() {
-        assert!(!is_own_process("", 101, 100));
-        assert!(!is_own_process("   \n", 101, 100));
+        assert!(!is_own_process("", 101, 100, "/usr/bin/trdpi"));
+        assert!(!is_own_process("   \n", 101, 100, "/usr/bin/trdpi"));
     }
 
     /// Bu makinede kendimizden başka kopya olmamalı; olsa bile
@@ -252,5 +259,31 @@ mod tests {
     fn listeleme_panik_yapmiyor() {
         let bulunan = find_others();
         assert!(!bulunan.iter().any(|i| i.pid == std::process::id()));
+    }
+}
+
+#[cfg(test)]
+mod cmdline_testleri {
+    use super::*;
+
+    /// Gözcü ve durdurma komutu da `trdpi` adını taşıyor. Bunları kopya
+    /// saymak, `--durdur`'un gözcüyü öldürmesine ve sayının şişmesine
+    /// ("2 kopya durduruldu") yol açıyordu.
+    #[test]
+    fn gozcu_ve_durdurma_kopya_sayilmiyor() {
+        assert!(!is_own_process(
+            "trdpi",
+            101,
+            100,
+            "/usr/bin/trdpi --bekci 42 trdpi_redirect_x"
+        ));
+        assert!(!is_own_process("trdpi", 101, 100, "/usr/bin/trdpi --geri"));
+        assert!(!is_own_process("trdpi", 101, 100, "/usr/bin/trdpi --durdur"));
+    }
+
+    #[test]
+    fn gercek_koruma_hala_bulunuyor() {
+        assert!(is_own_process("trdpi", 101, 100, "/usr/bin/trdpi"));
+        assert!(is_own_process("trdpi", 101, 100, "/usr/bin/trdpi --quic-gecir"));
     }
 }
