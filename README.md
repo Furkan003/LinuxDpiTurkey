@@ -3,10 +3,12 @@
 Türkiye'de engellenen sitelere erişimi açan Linux uygulaması. Aç, düğmeye bas, biter.
 
 <p align="center">
-  <img src="packaging/ekran.png" alt="TR-DPI penceresi" width="380">
+  <img src="packaging/ekran.png" alt="TR-DPI penceresi" width="400">
 </p>
 
 VPN değil. Uzak sunucu yok, hesap yok, üyelik yok. Trafiğin başka bir yere yönlendirilmiyor.
+
+Buradaki her sayı gerçek bir Türkiye hattında ölçüldü. İşe yaramayan yöntemler de yazıyor — hangisinin neden elendiği belli olsun diye.
 
 ---
 
@@ -34,7 +36,11 @@ Kaldırmak için: `sudo apt remove trdpi` (Arch'ta `yay -R trdpi-bin`)
 
 ## Kullanım
 
-Menüden **TR-DPI**'yi aç, **BAŞLAT**'a bas. Yönetici parolan bir kez sorulur.
+Kurulunca uygulama menüye girer: **Uygulamalar → Ağ → TR-DPI.** Masaüstünde de dursun istersen menüdeki simgeyi masaüstüne sürükle.
+
+Aç, **BAŞLAT**'a bas. Yönetici parolan sorulur.
+
+> **Parola penceresi TR-DPI'nin üstünde açılmayabilir.** Masaüstüne göre ekranın başka bir yerinde çıkıyor. Uygulama "lütfen bekle" derken ekranda onu ara. polkit verdiğin izni birkaç dakika hatırladığı için arka arkaya işlemlerde pencere hiç çıkmayabilir — o da normal.
 
 Pencereyi kapatabilirsin; koruma çalışmaya devam eder. Durdurmak için tekrar açıp **DURDUR**'a bas.
 
@@ -44,10 +50,27 @@ Terminal kullanmak isteyenler için:
 |---|---|
 | `sudo trdpi` | ölç, düzelt, koru |
 | `trdpi --olc` | yalnızca ölç, hiçbir şey değiştirme (yetki istemez) |
+| `trdpi --dene discord.com` | tek siteyi teşhis et (yetki istemez) |
+| `trdpi --rapor` | hattının engelleme profilini çıkar |
 | `sudo trdpi --sure 600` | 10 dakika sonra kendiliğinden geri al |
 | `sudo trdpi --durdur` | çalışan kopyaları durdur |
 | `sudo trdpi --geri` | yapılan her değişikliği geri al |
 | `sudo trdpi --quic-gecir` | QUIC'e hiç dokunma (aşağıya bak) |
+
+## Bir şey ters giderse
+
+**Koruma açık ama site hâlâ açılmıyor.** Tarayıcın koruma açılmadan önce o sayfayı denediyse hata sayfasını ekranda tutuyor ve kendiliğinden yenilemiyor. **Ctrl+Shift+R** yap. Tarayıcı çözdüğü adresi de bir süre aklında tuttuğu için ilk yenileme yavaş olabilir (ölçüldü: eski adresle 8.8 sn, doğru adresle 0.2 sn); ikincisi hızlanır.
+
+**Hangi sitede ne olduğunu görmek için** arayüzdeki kutuya site adını yazıp *Dene*'ye bas. Yetki istemez, o siteye özel cevap verir:
+
+```
+  Adres çözümleme   yanlış adres veriliyor
+  Bağlantı          yanıt gelmiyor
+  Güvenli aşama     ölçülemedi
+  QUIC              site adına göre engelli
+```
+
+**Hiçbiri olmuyorsa** *Hat raporunu kaydet*'e bas (ya da `trdpi --rapor`). Rapor senin hattının neyi nasıl engellediğini çıkarır. Telemetri yok; çıktı sende kalır.
 
 ## Gerçekten işe yarıyor mu
 
@@ -60,6 +83,8 @@ Gerçek bir Türkiye hattında ölçüldü (Ubuntu 24.04, her hedefe 15 deneme).
 | **Tam koruma** | **14/15** | **15/15** |
 | Yalnızca adres düzeltmesi *(kontrol)* | 7/15 | 8/15 |
 
+Discord'un masaüstü uygulaması da denendi: koruma kapalıyken 45 saniye sonra hâlâ "Checking for updates", açıkken tamamen açılıp oturum açıyor.
+
 ## Hızı düşürüyor mu
 
 Hayır. Koruma açıkken ve kapalıyken aynı hattan ölçüldü:
@@ -69,15 +94,18 @@ Hayır. Koruma açıkken ve kapalıyken aynı hattan ölçüldü:
 | 10 MB indirme | 8.20 MB/s | 8.20 MB/s |
 | Sayfa açılışı (TCP 443) | 0.171 s | 0.172 s |
 | Gerçek zamanlı yol (STUN) | 153 ms | 147 ms |
+| 40 eş zamanlı istek | 1.29 s | 1.35 s |
 | Durdurma | — | **0.10 s** |
 
 Trafik yerel bir motordan geçiyor ama motor veriyi kopyalamıyor; çekirdek iki bağlantıyı doğrudan birbirine bağlıyor.
 
 ## Nasıl çalışıyor
 
-Ölçtüğümüz hatta engel **iki katmanlıydı**; uygulama ikisini de çözüyor.
+Ölçtüğümüz hatta engel **dört ayrı katmandan** oluşuyordu; uygulama dördünü de çözüyor.
 
-**1. Adres çözümlemesine müdahale.** Engellenen siteler sorulduğunda sistem sahte bir adres alıyor (`195.175.254.2` — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres). O adrese hiçbir şekilde ulaşılamıyor.
+### 1. Adres çözümlemesine müdahale
+
+Engellenen siteler sorulduğunda sistem sahte bir adres alıyor (`195.175.254.2` — OONI ölçümlerinde Türkiye'de sansür yanıtı olarak belgelenen adres). O adrese hiçbir şekilde ulaşılamıyor.
 
 Basit görünen çözüm işe yaramıyor: "adres sunucusunu 1.1.1.1 yap" dediğinde de bağlanamıyorsun, çünkü dışarıdaki adres sunucularının standart kapısı kapalı. Uygulama bu yüzden **standart dışı kapıdan** soran kaynakları deneyip çalışanı buluyor.
 
@@ -89,7 +117,9 @@ Uygulama şifreli yolu **kurup doğruluyor** — kapının açık olması çalı
 
 Ayar **bağlantı bazında** uygulanıyor ve açılışta aynı komutu tekrarlayan küçük bir systemd birimiyle kalıcılaşıyor. Genel (global) ayar dosyası yazmak işe yaramıyordu: systemd-resolved sorguları bağlantının kendi çözümleyicisine yönlendirdiği için, DHCP'den adres alan her kurulumda genel ayar hiç devreye girmiyordu. Ölçüldü ve düzeltildi.
 
-**2. QUIC engeli.** Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni ve daha hızlı bağlantı yöntemi.
+### 2. QUIC engeli
+
+Tarayıcılar ve Electron uygulamaları (Discord bunlardan biri) önce QUIC deniyor — UDP 443 üzerinden çalışan yeni ve daha hızlı bağlantı yöntemi.
 
 Bu yolun nasıl engellendiğini ölçtük: **DPI, QUIC Initial paketini çözüp içindeki sunucu adını okuyor** ve engelli ada denk gelince datagramı düşürüyor. Kanıt kesin — aynı IP'ye, aynı porttan, tek değişken sunucu adı:
 
@@ -128,7 +158,9 @@ Bozuk toplam listede kalıyor: toplamı doğrulamayan denetimlerde işe yarayabi
 
 Motor QUIC'i aşamazsa (çekirdek desteği ya da yetki yoksa) eski davranışa düşülür: UDP 443 reddedilir ve uygulamalar anında korunan TCP yoluna geçer. **Oyunların ve sesli görüşmenin gerçek zamanlı trafiğine hiçbir durumda dokunulmuyor** — o trafik yüksek portlarda akar. İstemeyen `--quic-gecir` ile QUIC'i tamamen serbest bırakabilir.
 
-**3. Adresin tümüyle kapatılması.** Bazen engel alan adına değil, belirli bir adrese konuyor: o adrese giden hiçbir paket dönmüyor. Aynı alan adı çoğu zaman birden fazla adreste durduğu için (büyük siteler onlarca adres kullanır), engel hepsine konmamış olabilir.
+### 3. Adresin tümüyle kapatılması
+
+Bazen engel alan adına değil, belirli bir adrese konuyor: o adrese giden hiçbir paket dönmüyor. Aynı alan adı çoğu zaman birden fazla adreste durduğu için (büyük siteler onlarca adres kullanır), engel hepsine konmamış olabilir.
 
 Özgün adres hiçbir denemede yanıt vermezse uygulama, istemcinin gönderdiği site adını okuyup **adresi kendisi yeniden çözümlüyor** ve kalan adresleri sırayla deniyor. IPv4 kapalıyken IPv6 açık olabildiği için aile kısıtlaması da yok.
 
@@ -141,7 +173,9 @@ Motor QUIC'i aşamazsa (çekirdek desteği ya da yetki yoksa) eski davranışa d
 
 Yeniden çözümlemede yalnızca dış adresler kabul ediliyor: zehirlenmiş bir yanıt yerel ağdaki bir makineyi gösterirse ona bağlanılmaz.
 
-**4. Bağlantıların rastgele kesilmesi.** Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
+### 4. Bağlantıların rastgele kesilmesi
+
+Adres düzeldikten sonra bile bağlantıların yaklaşık yarısı anında kesiliyor. Kesilmeler kümelenmiyor, birbirinden bağımsız — bu yüzden **yeniden denemek** işe yarıyor.
 
 Yeniden deneme yalnızca tarayıcına ya da uygulamana tek bayt bile ulaşmadan önce yapılıyor. Yanıt gelmeye başladıktan sonra yeniden denemek veriyi bozardı.
 
@@ -151,7 +185,7 @@ Bunları yazdık, ölçtük ve bu hatta fark yaratmadıklarını gördük. Kod d
 
 **Trafiği parçalama.** Sabit konumdan bölme, site adının ortasından bölme, hiç bölmeme — üçü de aynı başarısızlık oranını verdi.
 
-**Düşük ömürlü sahte paket.** GoodbyeDPI'ın Windows'ta kullandığı teknik. Ömür değeri 1'den 8'e tarandı, hiçbiri tabandan iyi çıkmadı. Motor mekanik olarak doğru çalışıyor — paketi yakalıyor, sahte kopyayı kuruyor, gönderiyor — ama bu engeli aşmıyor.
+**Düşük ömürlü sahte paket (TCP'de).** GoodbyeDPI'ın Windows'ta kullandığı teknik. Ömür değeri 1'den 8'e tarandı, hiçbiri tabandan iyi çıkmadı. Motor mekanik olarak doğru çalışıyor — paketi yakalıyor, sahte kopyayı kuruyor, gönderiyor — ama bu engeli aşmıyor. *(Aynı fikir QUIC'te çalışıyor; farkı yukarıda.)*
 
 ## Kaynak kullanımı
 
@@ -159,12 +193,17 @@ Sürekli çalışan tek şey motor. Pencere yalnızca sen açtığında duruyor.
 
 | | Bellek | Dosya |
 |---|---|---|
-| Motor *(sürekli çalışan)* | **0.65 MB** | 0.9 MB |
-| Pencere *(açıkken)* | **16 MB** | 1.2 MB |
+| Motor *(sürekli çalışan)* | **1.0 MB** | 1.1 MB |
+| Gözcü *(motorun yanında)* | 0.7 MB | aynı ikili |
+| Pencere *(yalnızca açıkken)* | **16 MB** | 1.7 MB |
 | *NetworkManager (karşılaştırma)* | *18 MB* | |
-| *Thunar (karşılaştırma)* | *42 MB* | |
+| *xfce4-panel (karşılaştırma)* | *32 MB* | |
+
+Bellek değerleri koruma açıkken, 38 bağlantı geçtikten sonra ölçüldü. Yük altında da 40 eş zamanlı bağlantıda 2.2 MB'yi geçmiyor; bağlantı biter bitmez geri iniyor.
 
 Arayüzde web motoru ve OpenGL kullanılmıyor. Aynı pencereyi OpenGL ile de yazıp ölçtük: 115 MB. Ölçüm kararı verdi.
+
+İş parçacığı yığınları 2 MiB'den 128 KiB'e indirildi; bu yol sığ çalışıyor ve tamponlar öbekte. Sanal bellek 174 MB'den 7 MB'ye düştü.
 
 ## Hangi dağıtımlarda çalışır
 
@@ -196,7 +235,7 @@ Koruma açıkken ölçüldü: gerçek zamanlı yol 147 ms'de yanıt veriyor, kap
 
 Engelleme yöntemi operatörden operatöre değişiyor: kimi adrese bakıyor, kimi alan adına. Bu yüzden uygulama tek bir tekniğe bağlı kalmıyor.
 
-Bağlantılar kurulmuyorsa kendiliğinden bir sonraki tekniğe geçiyor — en az altı bağlantıya bakıp, kurulamayan oranı %30'u aşarsa. Sağlıklı bir hatta hiç devreye girmiyor.
+Bağlantılar kurulmuyorsa kendiliğinden bir sonraki tekniğe geçiyor — en az altı bağlantıya bakıp, kurulamayan oranı %30'u aşarsa. Sağlıklı bir hatta hiç devreye girmiyor. Çalışan basamak hatırlanıyor; hat düzelirse bir basamak geri iniyor.
 
 | Basamak | Teknik |
 |---|---|
@@ -206,6 +245,8 @@ Bağlantılar kurulmuyorsa kendiliğinden bir sonraki tekniğe geçiyor — en a
 | 4 | sahte paket gönderme |
 
 Hepsi tükenirse bunu açıkça söylüyor: *"Denenecek teknik kalmadı ve bağlantılar hâlâ kurulamıyor."*
+
+Ölçebildiğimiz tek hat Türk Telekom oldu. `trdpi --rapor` tam da bu yüzden var: başka bir operatörde çalıştırıp çıktıyı [issue](https://github.com/Furkan003/LinuxDpiTurkey/issues) olarak açarsan ikinci bir hattı görmüş oluruz.
 
 ## Adres düzeltmesi çalışmazsa
 
@@ -223,54 +264,17 @@ Artık yalnızca **bizim açtığımız soketler** muaf: giden bağlantıya bir 
 
 Paket bir systemd servisi kuruyor ama **etkinleştirmiyor.** Koruma sistem geneli değişiklik yapıyor ve bunun senin kararın olması gerekiyor.
 
+Arayüzde bir onay kutusu var. Terminalden:
+
 ```bash
 trdpi --acilista              # durum
 sudo trdpi --acilista-ac      # açılışta başlasın
 sudo trdpi --acilista-kapat   # başlamasın
 ```
 
-Arayüzde de bir anahtar var. Servis çökerse üç denemede vazgeçiyor: koruma kapalı kalması internetin kesilmesinden iyidir.
+Servis çökerse üç denemede vazgeçiyor: koruma kapalı kalması internetin kesilmesinden iyidir.
 
 Durdurma ve başlatma servisin farkında. Yoksa şöyle oluyordu: DURDUR'a basınca motor ölüyor, systemd bunu arıza sayıp geri getiriyor, koruma birkaç saniye sonra kendiliğinden açılıyordu. Artık sahiplik tek yerde — servis çalışıyorsa önce o durduruluyor.
-
-## Bir site açılmıyorsa
-
-**Arayüzden:** site adını yaz, *Dene* düğmesine bas. Komut bilmen gerekmiyor.
-
-Terminalden aynısı:
-
-```bash
-trdpi --dene discord.com
-```
-
-O siteye özel cevap veriyor — yönetici yetkisi istemeden:
-
-```
-  Adres çözümleme   yanlış adres veriliyor
-  Bağlantı          yanıt gelmiyor
-  Güvenli aşama     ölçülemedi
-  QUIC              site adına göre engelli
-```
-
-Adres çözümleme bozuksa gerçek adresi çalışan bir kaynaktan alıp QUIC'i ona göre ölçüyor; yoksa sinkhole'a ölçüm yapmış olurduk.
-
-## Hattını raporlamak
-
-Arayüzde *Hat raporunu kaydet* düğmesi bunu ev dizinine yazıyor. Terminalden:
-
-```bash
-trdpi --rapor
-```
-
-Bu hattın neyi nasıl engellediğini çıkarıyor: hangi adres kaynakları çalışıyor, hangi kapılar açık, hangi siteler nasıl engelli. **Telemetri yok** — çıktı ekranda kalıyor, paylaşmak sana kalmış.
-
-Başka bir operatörde çalıştırıp karşılaştırmak için var. Ölçemediğimiz tek şey ikinci bir hattı görmekti.
-
-## Bellek
-
-Ölçüldü: **boşta 0.8 MB, 40 eş zamanlı bağlantıda 2.2 MB.** Bağlantı biter bitmez geri iniyor.
-
-İş parçacığı yığınları 2 MiB'den 128 KiB'e indirildi; bu yol sığ çalışıyor ve tamponlar öbekte. Sanal bellek 174 MB'den 7 MB'ye düştü. ClientHello tamponu da okunan boyuta küçültülüyor — bağlantı boyunca 16 KB boşuna durmuyor.
 
 ## Motor çökerse
 
@@ -309,7 +313,7 @@ Program açılınca yeni sürüm var mı diye bakar ve varsa söyler — **kendi
 Rust 1.82+ gerekir.
 
 ```bash
-cargo test                                   # 345 test
+cargo test                                   # 362 test
 cargo clippy --all-targets -- -D warnings
 cargo build -p trdpi-gui                     # arayüz (yalnızca Linux)
 bash packaging/deb-olustur.sh                # .deb üret
@@ -329,35 +333,32 @@ crates/
 
 Testlerin tamamı gerçek ağ olmadan çalışır. Dağıtım uyumluluğu için `.deb` Ubuntu 22.04 ortamında üretilmelidir.
 
+Sürüm sürüm neyin değiştiği [Releases](https://github.com/Furkan003/LinuxDpiTurkey/releases) sayfasında; her düzeltmenin *neden* yapıldığı commit mesajlarında yazıyor.
+
 ## Yol haritası
 
 - [x] Ağ ölçümü ve teşhis
 - [x] Adres çözümleme düzeltmesi (kalıcı)
+- [x] Şifreli adres çözümleme (DNS-over-TLS)
 - [x] Yeniden deneme motoru
-- [x] Grafik arayüz
-- [x] Çift tıkla kurulum (.deb)
-- [x] Yeni sürüm bildirimi
-- [x] İmzalı apt deposu
-- [x] AUR paketi (Arch)
+- [x] Adres engelinde başka adrese geçme
 - [x] QUIC (UDP 443) kapsamı
 - [x] QUIC engelini aşma (sahte Initial + düşük TTL)
-- [x] Motor çökerse kuralları kaldıran gözcü
-- [x] IPv6 (açılışta sınanarak)
-- [x] Düz HTTP (port 80) kapsamı
-- [x] Root olarak çalışan uygulamalar da kapsamda
-- [x] Teknik yükseltme merdiveni
-- [x] systemd-resolved olmayan dağıtımlar için adres çevirme
-- [x] Şifreli adres çözümleme (DNS-over-TLS)
 - [x] Geçerli sahte QUIC Initial (kütüphanesiz kripto)
+- [x] Teknik yükseltme merdiveni ve çalışanı hatırlama
+- [x] systemd-resolved olmayan dağıtımlar için adres çevirme
+- [x] Düz HTTP (port 80) kapsamı
+- [x] IPv6 (açılışta sınanarak)
+- [x] Root olarak çalışan uygulamalar da kapsamda
+- [x] Motor çökerse kuralları kaldıran gözcü
+- [x] Grafik arayüz — canlı durum, tek site teşhisi, hat raporu
 - [x] İsteğe bağlı açılışta başlatma
-- [x] Tek site teşhisi (`--dene`) ve hat raporu (`--rapor`)
-- [x] Arayüzde canlı durum
-- [x] Çalışan tekniği hatırlama
 - [x] Gerçek zamanlı yol ölçümü
-- [ ] Açılışta otomatik başlatma
+- [x] Çift tıkla kurulum (.deb), imzalı apt deposu, yeni sürüm bildirimi
+- [x] AUR paketi (Arch) — *kayıt açılınca gönderilecek*
 - [ ] AppImage ve .rpm
-- [x] Adres engelinde başka adrese geçme
 - [ ] Gerçek zamanlı trafikte engel aşma *(ölçümde kapalı bir hat görülünce)*
+- [ ] İkinci bir operatörde ölçüm *(`--rapor` çıktısı arıyoruz)*
 
 ## Lisans
 
