@@ -1,18 +1,18 @@
 Package: trdpi
 Architecture: amd64
-Version: 0.1.11
+Version: 0.1.12
 Priority: optional
 Section: net
 Maintainer: TR-DPI
-Installed-Size: 2912
+Installed-Size: 2920
 Depends: libc6 (>= 2.35), libx11-6, libxkbcommon0, libgl1, libwayland-client0, nftables, policykit-1 | polkit
 Recommends: systemd-resolved
-Filename: pool/main/t/trdpi/trdpi_0.1.11_amd64.deb
-Size: 816798
-MD5sum: b7c54e316402cf969a8f1aaadd835b7f
-SHA1: 922ff639d741d4364909fdfb970e27015189ceb6
-SHA256: 20e473ed7807a188d0fd9a74fc44309361131bc10fc2087575cb3fc09bedfef2
-SHA512: 05539a3c9a3fde7a7c9c2e715ae8317121f1fd87a771931cf83dc2bf8b5aedee75011c53bfb301b35b8c0a6ad6471e63cb27f664b32d3d0050b791bb71343a2f
+Filename: pool/main/t/trdpi/trdpi_0.1.12_amd64.deb
+Size: 819384
+MD5sum: d2f941aac17d1b2800647b0c7244b2a7
+SHA1: b86eb23b367c5ab4b5afcecc80226c2ee5ee5b3e
+SHA256: 2ee828c1c4f4623314aa9bd38fc9de709653b2d549251e99b4f1e56ac7789819
+SHA512: c9779b255de83b28fcacfb835a5a428df7440481ed1ea7278437de604a2d248fb3e687698345b6b00f13c5aab933473f2e23ee5776c7a6eeb011d81c1af32c54
 Description: Engellenen sitelere erisimi acar
  Bağlantındaki engeli önce ölçer, sonra ona uygun yöntemi kendisi seçer.
  Terminal gerekmez: pencereyi aç, düğmeye bas.
