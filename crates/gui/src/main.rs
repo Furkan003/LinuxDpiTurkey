@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use fltk::{
     app,
     button::{Button, CheckButton},
+    input::Input,
     enums::{Align, Color, FrameType},
     frame::Frame,
     prelude::*,
@@ -107,6 +108,10 @@ struct Uygulama {
     dugme: Button,
     /// Motor çalışırken sayaçları gösteren satır.
     ozet: Frame,
+    /// Site ölçümünün sonucu; arka planda dolduruluyor.
+    sonuc: Frame,
+    /// Ölçüm arka planda sürüyor mu ve bittiyse sonucu.
+    olcum: Arc<Mutex<Option<String>>>,
     alt_bilgi: Frame,
     guncelleme: Arc<Mutex<Option<update::UpdateStatus>>>,
 }
@@ -157,8 +162,19 @@ adres çözümleme: {}",
         self.alt_bilgi.redraw();
     }
 
+    /// Arka planda biten ölçümü ekrana taşır.
+    fn olcumu_al(&mut self) {
+        if let Ok(mut o) = self.olcum.lock() {
+            if let Some(metin) = o.take() {
+                self.sonuc.set_label(&metin);
+                self.sonuc.redraw();
+            }
+        }
+    }
+
     /// Gerçek durumu okuyup ekrandakiyle eşitler.
     fn tazele(&mut self) {
+        self.olcumu_al();
         if self.durum == Durum::PkexecYok {
             return;
         }
@@ -219,7 +235,7 @@ fn main() {
     app::background(24, 26, 30);
     app::foreground(230, 232, 235);
 
-    let mut pencere = Window::new(100, 100, 420, 380, "TR-DPI");
+    let mut pencere = Window::new(100, 100, 420, 596, "TR-DPI");
     pencere.set_color(Color::from_rgb(24, 26, 30));
 
     // Durum ışığı: yuvarlak, dolu.
@@ -253,9 +269,48 @@ fn main() {
     acilista.set_label_color(Color::from_rgb(180, 182, 188));
     acilista.set_value(engine::acilista_acik());
 
+    // --- Sorun giderme -------------------------------------------------
+    // Teşhis komut satırında vardı; arayüzde de olması gerekiyor, çünkü bu
+    // uygulamanın amacı komut bilmeye gerek bırakmamak.
+    let mut ayrac = Frame::new(20, 306, 380, 2, "");
+    ayrac.set_frame(FrameType::FlatBox);
+    ayrac.set_color(Color::from_rgb(45, 48, 55));
+
+    let mut soru = Frame::new(20, 314, 380, 18, "Bir site açılmıyorsa adını yaz ve dene:");
+    soru.set_label_size(12);
+    soru.set_label_color(Color::from_rgb(180, 182, 188));
+    soru.set_align(Align::Left | Align::Inside);
+
+    let mut site_kutusu = Input::new(20, 336, 270, 28, "");
+    site_kutusu.set_text_size(13);
+    site_kutusu.set_color(Color::from_rgb(38, 41, 47));
+    site_kutusu.set_text_color(Color::from_rgb(230, 232, 235));
+    site_kutusu.set_frame(FrameType::FlatBox);
+    site_kutusu.set_value("discord.com");
+
+    let mut dene_dugmesi = Button::new(300, 336, 100, 28, "Dene");
+    dene_dugmesi.set_label_size(13);
+    dene_dugmesi.set_color(Color::from_rgb(45, 48, 55));
+    dene_dugmesi.set_label_color(Color::from_rgb(235, 237, 240));
+    dene_dugmesi.set_frame(FrameType::FlatBox);
+
+    let mut sonuc = Frame::new(20, 372, 380, 120, "");
+    sonuc.set_label_size(11);
+    sonuc.set_label_color(Color::from_rgb(150, 152, 158));
+    sonuc.set_align(Align::Left | Align::Inside | Align::Wrap);
+
+    // Geri çağrı kendi kopyasını taşıyor; asıl alan Uygulama içinde duruyor.
+    let sonuc_kopya = sonuc.clone();
+
+    let mut rapor_dugmesi = Button::new(110, 502, 200, 28, "Hat raporunu kaydet");
+    rapor_dugmesi.set_label_size(12);
+    rapor_dugmesi.set_color(Color::from_rgb(45, 48, 55));
+    rapor_dugmesi.set_label_color(Color::from_rgb(200, 202, 208));
+    rapor_dugmesi.set_frame(FrameType::FlatBox);
+
     let mut alt_bilgi = Frame::new(
         0,
-        342,
+        556,
         420,
         20,
         "Oyunların gerçek zamanlı bağlantısı kapsam dışı",
@@ -295,6 +350,8 @@ fn main() {
         aciklama,
         dugme: dugme.clone(),
         ozet,
+        sonuc,
+        olcum: Arc::new(Mutex::new(None)),
         alt_bilgi,
         guncelleme,
     }));
@@ -303,6 +360,53 @@ fn main() {
     {
         let d = Rc::clone(&durum);
         dugme.set_callback(move |_| d.borrow_mut().dugmeye_basildi());
+    }
+
+    {
+        let d = Rc::clone(&durum);
+        let kutu = site_kutusu.clone();
+        let mut sonuc_alani = sonuc_kopya;
+        dene_dugmesi.set_callback(move |b| {
+            let site = kutu.value().trim().to_string();
+            if site.is_empty() {
+                return;
+            }
+            // Ölçüm ağa çıkıyor; pencere donmasın diye ayrı iş parçacığında.
+            sonuc_alani.set_label("Ölçülüyor...");
+            sonuc_alani.redraw();
+            b.deactivate();
+            let hedef = Arc::clone(&d.borrow().olcum);
+            let mut dugme = b.clone();
+            std::thread::spawn(move || {
+                let metin = engine::site_dene(&site);
+                if let Ok(mut o) = hedef.lock() {
+                    *o = Some(metin);
+                }
+                dugme.activate();
+                app::awake();
+            });
+        });
+    }
+
+    {
+        let d = Rc::clone(&durum);
+        rapor_dugmesi.set_callback(move |b| {
+            b.deactivate();
+            let hedef = Arc::clone(&d.borrow().olcum);
+            let mut dugme = b.clone();
+            std::thread::spawn(move || {
+                let metin = match engine::rapor_kaydet() {
+                    Ok(yol) => format!("Rapor kaydedildi:
+{}", yol.display()),
+                    Err(e) => format!("Rapor kaydedilemedi: {e}"),
+                };
+                if let Ok(mut o) = hedef.lock() {
+                    *o = Some(metin);
+                }
+                dugme.activate();
+                app::awake();
+            });
+        });
     }
 
     {

@@ -222,3 +222,48 @@ pub fn acilista_ayarla(ac: bool) -> std::io::Result<()> {
         .status()
         .map(|_| ())
 }
+
+/// Bir siteyi ölçer ve motorun çıktısını döner.
+///
+/// Yönetici yetkisi gerekmiyor: ölçüm sistemi değiştirmiyor, yalnızca
+/// soruyor. Bu yüzden `pkexec` yok — kullanıcıya boşuna parola sorulmasın.
+pub fn site_dene(site: &str) -> String {
+    let cikti = Command::new(engine_path()).arg("--dene").arg(site).output();
+    match cikti {
+        Ok(o) => {
+            let metin = String::from_utf8_lossy(&o.stdout);
+            // Terminal biçimini arayüze uyarlıyoruz: başlık satırı düşüyor,
+            // girintiler kalkıyor (etiket zaten kendi kenar boşluğunu
+            // veriyor) ve komut önerisi düğmeye çevriliyor.
+            let satirlar: Vec<String> = metin
+                .lines()
+                .filter(|l| !l.ends_with("ölçülüyor..."))
+                .map(|l| {
+                    if l.contains("sudo trdpi") {
+                        "BAŞLAT düğmesine basıp tekrar dene.".to_string()
+                    } else {
+                        l.trim_end().to_string()
+                    }
+                })
+                .skip_while(|l| l.trim().is_empty())
+                .collect();
+            satirlar.join("
+")
+        }
+        Err(e) => format!("Ölçüm çalıştırılamadı: {e}"),
+    }
+}
+
+/// Hat raporunu kullanıcının ev dizinine yazar ve yolunu döner.
+///
+/// Amaç paylaşılabilir bir dosya: başka bir operatördeki biri de çalıştırıp
+/// karşılaştırabilsin. Hiçbir yere gönderilmiyor.
+pub fn rapor_kaydet() -> std::io::Result<PathBuf> {
+    let ev = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let yol = ev.join("trdpi-hat-raporu.txt");
+    let cikti = Command::new(engine_path()).arg("--rapor").output()?;
+    std::fs::write(&yol, cikti.stdout)?;
+    Ok(yol)
+}

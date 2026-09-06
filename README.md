@@ -233,6 +233,10 @@ Arayüzde de bir anahtar var. Servis çökerse üç denemede vazgeçiyor: koruma
 
 ## Bir site açılmıyorsa
 
+**Arayüzden:** site adını yaz, *Dene* düğmesine bas. Komut bilmen gerekmiyor.
+
+Terminalden aynısı:
+
 ```bash
 trdpi --dene discord.com
 ```
@@ -249,6 +253,8 @@ O siteye özel cevap veriyor — yönetici yetkisi istemeden:
 Adres çözümleme bozuksa gerçek adresi çalışan bir kaynaktan alıp QUIC'i ona göre ölçüyor; yoksa sinkhole'a ölçüm yapmış olurduk.
 
 ## Hattını raporlamak
+
+Arayüzde *Hat raporunu kaydet* düğmesi bunu ev dizinine yazıyor. Terminalden:
 
 ```bash
 trdpi --rapor
