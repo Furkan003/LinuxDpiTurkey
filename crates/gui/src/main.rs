@@ -67,11 +67,14 @@ impl Durum {
     fn aciklama(self) -> &'static str {
         match self {
             Self::Kapali => "Engellenen siteler açılmayabilir.",
-            // Ölçüldü: pencere TR-DPI'nin üstünde değil, ekranın başka bir
-            // yerinde açılıyor ve kullanıcı fark etmiyordu.
-            Self::Baslatiliyor => "Parola penceresi açıldı — ekranda bul ve parolanı gir.",
+            // "Açıldı" demiyoruz: polkit izni birkaç dakika hatırlıyor, o
+            // sürede ikinci çağrıda pencere **hiç açılmıyor**. Kullanıcı
+            // "pencere açıldı diyor ama açılmıyor" diye haklı olarak
+            // takıldı. Açıldığında da TR-DPI'nin üstünde değil, ekranın
+            // başka bir yerinde çıkıyor; ikisi de ölçüldü.
+            Self::Baslatiliyor => "Parola penceresi çıkarsa ekranda bul ve parolanı gir.",
             Self::Acik => "Bütün uygulamalar kapsam içinde.",
-            Self::Durduruluyor => "Parola penceresi açıldı — ekranda bul ve parolanı gir.",
+            Self::Durduruluyor => "Parola penceresi çıkarsa ekranda bul ve parolanı gir.",
             Self::PkexecYok => "Bu sistemde yönetici izni istenemiyor.",
         }
     }
