@@ -1,23 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Kalkan: koruma. İçindeki kesik çizgi: engellenen yolun açılması. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <!--
+    TR-DPI — "Akış".
+
+    Kalkan yok: bu araç bir şeyi savunmuyor, kapalı bir yolu açıyor.
+    Gri gövde engel; yeşil çizgi onun içinden gerçek bir kanal açıp
+    iki ucundan da dışarı taşıyor — geçti ve yoluna devam ediyor.
+
+    Kanal maskeyle **oyuluyor**, boyanmıyor: saydam kaldığı için zemin ne
+    olursa olsun gerçek bir açıklık gibi duruyor. Koyu zeminde koyu, açık
+    zeminde açık.
+
+    Boyutlar ölçülerek seçildi. Önce ince çizgi + iki küçük blok denendi;
+    32 pikselin altında engel kayboluyor, geriye anlamsız bir yeşil eğri
+    kalıyordu. Kütle gövdeye verilince işaret 16 piksele kadar okunuyor.
+
+    Yeşil, arayüzün "koruma açık" yeşilinin ta kendisi (#50c878).
+  -->
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2f9e6e"/>
-      <stop offset="1" stop-color="#1b6b4a"/>
-    </linearGradient>
+    <mask id="kanal">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M3 49 L61 15" stroke="#000" stroke-width="21" stroke-linecap="round"/>
+    </mask>
   </defs>
 
-  <path d="M32 5 L54 13 V31 C54 45 44 55 32 59 C20 55 10 45 10 31 V13 Z"
-        fill="url(#g)"/>
-  <path d="M32 5 L54 13 V31 C54 45 44 55 32 59 C20 55 10 45 10 31 V13 Z"
-        fill="none" stroke="#0e3f2c" stroke-width="2"/>
-
-  <!-- Engellenen yol: kesik. Sonra devam ediyor. -->
-  <g stroke="#eafaf2" stroke-width="4" stroke-linecap="round">
-    <line x1="18" y1="32" x2="27" y2="32"/>
-    <line x1="37" y1="32" x2="46" y2="32"/>
-  </g>
-  <!-- Aradaki boşluğu kapatan geçiş. -->
-  <path d="M27 32 Q32 20 37 32" fill="none" stroke="#ffd36b"
-        stroke-width="4" stroke-linecap="round"/>
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="#4a5058" mask="url(#kanal)"/>
+  <path d="M3 49 L61 15" stroke="#50c878" stroke-width="10" stroke-linecap="round"/>
 </svg>

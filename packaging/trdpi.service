@@ -13,21 +13,26 @@ Description=TR-DPI koruma
 Documentation=https://github.com/Furkan003/LinuxDpiTurkey
 After=network-online.target systemd-resolved.service
 Wants=network-online.target
+# Çökerse kaldır, ama sonsuz döngüye girme: üç denemede toparlanamıyorsa
+# sorun geçici değildir ve korumanın kapalı kalması internetin kesilmesinden
+# iyidir. Bu iki anahtar [Unit] bölümüne ait — [Service] altında systemd
+# onları "Unknown key name" deyip sessizce yok sayıyor.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/trdpi
 # Servis nasıl biterse bitsin sistemi eski haline döndür. Motorun kendi
 # temizliği ve gözcü süreç zaten var; bu üçüncü güvence.
-ExecStopPost=/usr/bin/trdpi --geri
+#
+# `--geri` değil: o, çalışan kopyaları da durdurur ve kurallarını siler.
+# Elle başlatılmış bir koruma varken servis kapanırsa onu öldürürdü.
+# `--temizle` yalnızca sahipsiz kalıntıyı topluyor.
+ExecStopPost=/usr/bin/trdpi --temizle
 
-# Çökerse kaldır, ama sonsuz döngüye girme: üç denemede toparlanamıyorsa
-# sorun geçici değildir ve koruma kapalı kalması internetin kesilmesinden
-# iyidir.
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=3
 
 [Install]
 WantedBy=multi-user.target

@@ -231,6 +231,8 @@ sudo trdpi --acilista-kapat   # başlamasın
 
 Arayüzde de bir anahtar var. Servis çökerse üç denemede vazgeçiyor: koruma kapalı kalması internetin kesilmesinden iyidir.
 
+Durdurma ve başlatma servisin farkında. Yoksa şöyle oluyordu: DURDUR'a basınca motor ölüyor, systemd bunu arıza sayıp geri getiriyor, koruma birkaç saniye sonra kendiliğinden açılıyordu. Artık sahiplik tek yerde — servis çalışıyorsa önce o durduruluyor.
+
 ## Bir site açılmıyorsa
 
 **Arayüzden:** site adını yaz, *Dene* düğmesine bas. Komut bilmen gerekmiyor.

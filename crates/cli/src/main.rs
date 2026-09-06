@@ -80,6 +80,12 @@ Seçenekler için:  trdpi --yardim"
         durdur();
         return geri_al();
     }
+    // Servisin kapanış kancası. `--geri` değil, çünkü o çalışan kopyaları da
+    // durdurur: servis kapanırken elle başlatılmış bir koruma varsa onu
+    // öldürürdü. Bu komut yalnızca **sahipsiz** kalıntıyı topluyor.
+    if args.iter().any(|a| a == "--temizle") {
+        return temizle();
+    }
     let sadece_olc = args.iter().any(|a| a == "--olc");
     // QUIC koruma kapsamına girmiyor: paket düzeyinde iş ve kullanıcı
     // alanından yapılamıyor. Açık bırakırsak uygulama önce QUIC deniyor,
@@ -100,6 +106,9 @@ Seçenekler için:  trdpi --yardim"
 
     // 0. Başka bir kopya çalışıyorsa dinleyici açılamaz ve koruma sessizce
     //    devre dışı kalır. Önce onu durduruyoruz.
+    if !sadece_olc && servisi_durdur() {
+        println!("Servis olarak çalışan koruma durduruldu.");
+    }
     let digerleri = instance::find_others();
     if !digerleri.is_empty() && !sadece_olc {
         println!("Çalışan {} kopya bulundu, durduruluyor...", digerleri.len());
@@ -391,13 +400,24 @@ Seçenekler için:  trdpi --yardim"
 
 /// Çalışan kopyaları durdurur.
 fn durdur() {
+    // Önce servis: altındaki süreci öldürmek yetmez, systemd geri getirir.
+    let servis = servisi_durdur();
+
     let digerleri = instance::find_others();
     if digerleri.is_empty() {
-        println!("Çalışan kopya yok.");
+        if servis {
+            println!("Servis durduruldu.");
+        } else {
+            println!("Çalışan kopya yok.");
+        }
         return;
     }
     let n = instance::stop_all(&digerleri);
-    println!("{n} kopya durduruldu.");
+    if servis {
+        println!("Servis ve {n} kopya durduruldu.");
+    } else {
+        println!("{n} kopya durduruldu.");
+    }
 }
 
 /// Taban ve ölçüm hedeflerini sırayla dener.
@@ -814,6 +834,60 @@ fn acilista_durum() {
             println!("Açmak için:  sudo trdpi --acilista-ac");
         }
     }
+}
+
+/// Sahipsiz kalıntıyı temizler; çalışan bir koruma varsa hiçbir şey yapmaz.
+///
+/// Servisin `ExecStopPost` kancası bunu çağırıyor. Oradan `--geri` çağırmak
+/// iki şeyi birden bozuyordu: çalışan kopyaları öldürüyordu ve onların
+/// kurallarını siliyordu — yani servis kapanırken elle başlatılmış bir
+/// koruma sessizce devre dışı kalıyordu.
+fn temizle() {
+    let baskalari = instance::find_others();
+    if !baskalari.is_empty() {
+        // Kurallar ve adres ayarı onların; dokunmuyoruz.
+        return;
+    }
+    geri_al();
+}
+
+/// Servis şu an koruma çalıştırıyor mu?
+///
+/// `deactivating` bilerek "hayır" sayılıyor: servis kapanırken kendi
+/// `ExecStopPost` kancası bu programı `--geri` ile çağırıyor ve o çağrı
+/// servisi tekrar durdurmaya kalkarsa kendini ısırır.
+fn servis_calisiyor() -> bool {
+    systemctl_cikti(&["is-active", SERVIS])
+        .map(|s| s.trim() == "active")
+        .unwrap_or(false)
+}
+
+/// Servisin ana süreci biz miyiz?
+///
+/// Biz servisin kendisiysek servisi durdurmak kendimizi öldürmek olur;
+/// temizliğimizi yapamadan gideriz.
+fn servis_biziz() -> bool {
+    systemctl_cikti(&["show", SERVIS, "--property=MainPID", "--value"])
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .is_some_and(|pid| pid == std::process::id())
+}
+
+/// Servis koruma çalıştırıyorsa onu durdurur.
+///
+/// **Neden gerekli:** motoru doğrudan öldürmek yetmiyor. Servis altında
+/// çalışan bir kopya öldürüldüğünde systemd bunu arıza sayıp yeniden
+/// başlatıyor; kullanıcı "durdur" diyor, birkaç saniye bekliyor ve koruma
+/// geri geliyor. Aynı kavga başlatırken de oluyordu: elle başlatılan kopya
+/// servisinkini öldürüyor, systemd yenisini kaldırıyor, o da elle
+/// başlatılanı öldürüyordu.
+///
+/// Sahipliği tek yerde topluyoruz: servis çalışıyorsa önce o durdurulur.
+fn servisi_durdur() -> bool {
+    if !servis_calisiyor() || servis_biziz() {
+        return false;
+    }
+    systemctl(&["stop", SERVIS]).is_ok()
 }
 
 /// Servis dosyası kurulu mu?
@@ -1245,7 +1319,7 @@ fn yardim() {
 }
 
 /// Tanıdığımız bütün seçenekler.
-const SECENEKLER: [&str; 15] = [
+const SECENEKLER: [&str; 16] = [
     "--yardim",
     "-h",
     "--surum",
@@ -1261,6 +1335,7 @@ const SECENEKLER: [&str; 15] = [
     "--acilista-kapat",
     "--dene",
     "--rapor",
+    "--temizle",
 ];
 
 /// Listede olmayan ilk argümanı döndürür.
