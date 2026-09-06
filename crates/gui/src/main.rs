@@ -67,9 +67,11 @@ impl Durum {
     fn aciklama(self) -> &'static str {
         match self {
             Self::Kapali => "Engellenen siteler açılmayabilir.",
-            Self::Baslatiliyor => "Parola penceresi açılacak.",
+            // Ölçüldü: pencere TR-DPI'nin üstünde değil, ekranın başka bir
+            // yerinde açılıyor ve kullanıcı fark etmiyordu.
+            Self::Baslatiliyor => "Parola penceresi açıldı — ekranda bul ve parolanı gir.",
             Self::Acik => "Bütün uygulamalar kapsam içinde.",
-            Self::Durduruluyor => "Ayarlar eski haline getiriliyor.",
+            Self::Durduruluyor => "Parola penceresi açıldı — ekranda bul ve parolanı gir.",
             Self::PkexecYok => "Bu sistemde yönetici izni istenemiyor.",
         }
     }
@@ -232,10 +234,15 @@ adres çözümleme: {}",
                 self.gecis_basladi = None;
             }
             Durum::Baslatiliyor | Durum::Durduruluyor => {
-                // Parola penceresi iptal edildiyse sonsuza kadar beklemeyelim.
-                if self
-                    .gecis_basladi
-                    .is_some_and(|t| t.elapsed() > GECIS_SINIRI)
+                // Yetki çağrısı sürerken saymıyoruz: kullanıcı parolasını
+                // yazıyor olabilir. Ölçüldü — 45 saniyelik sınır tam da
+                // parola penceresi ekranda beklerken doluyor ve ekran
+                // "kendiliğinden geri açıldı" gibi görünüyordu. Çağrı
+                // bittiğinde `yetkiyi_kontrol_et` zaten anında haber veriyor.
+                if self.islem.is_none()
+                    && self
+                        .gecis_basladi
+                        .is_some_and(|t| t.elapsed() > GECIS_SINIRI)
                 {
                     let bekleyen = self.durum;
                     self.durum = if calisiyor {
