@@ -5,7 +5,11 @@ GenericName=Bağlantı Koruması
 Comment=Engellenen sitelere erişimi açar
 Comment[en]=Restores access to blocked sites
 Exec=trdpi-arayuz
-Icon=trdpi
+# Tema adi degil, tam yol. xfdesktop masaustune kopyalanan baslaticinin
+# Icon=trdpi adini cozemiyor -- bos sayfa ikonu gosteriyor (olculdu:
+# xfdesktop 4.18, ikon onbellegi taze, PNG surumu de eklendi, degismedi).
+# Tam yol her iki yerde de calisiyor: menude de, masaustunde de.
+Icon=/usr/share/icons/hicolor/scalable/apps/trdpi.svg
 Terminal=false
 Categories=Network;Security;
 Keywords=dpi;sansur;engel;discord;roblox;vpn;
