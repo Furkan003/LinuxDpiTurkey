@@ -108,6 +108,9 @@ struct Uygulama {
     dugme: Button,
     /// Motor çalışırken sayaçları gösteren satır.
     ozet: Frame,
+    /// Süren yetki çağrısı. Sonucu beklenmezse hatası kaybolur ve kullanıcı
+    /// 45 saniye "lütfen bekle" görüp sebebini hiç öğrenemez.
+    islem: Option<std::process::Child>,
     /// Geçiş zaman aşımına uğrarsa kullanıcıya söylenecek şey.
     ///
     /// Bunu söylemezsek 45 saniye "lütfen bekle" gördükten sonra ekranın eski
@@ -183,9 +186,38 @@ adres çözümleme: {}",
         }
     }
 
+    /// Süren yetki çağrısı bittiyse sonucunu okur.
+    ///
+    /// Başarısızsa 45 saniye beklemenin anlamı yok: sebebini hemen söyleyip
+    /// ekranı gerçek duruma döndürüyoruz.
+    fn yetkiyi_kontrol_et(&mut self) {
+        let Some(cocuk) = self.islem.as_mut() else {
+            return;
+        };
+        let Ok(Some(durum)) = cocuk.try_wait() else {
+            return;
+        };
+        let mut hata_metni = String::new();
+        if let Some(mut e) = cocuk.stderr.take() {
+            use std::io::Read;
+            let _ = e.read_to_string(&mut hata_metni);
+        }
+        self.islem = None;
+        if let Some(mesaj) = engine::yetki_hatasi(durum.code(), &hata_metni) {
+            self.not = Some(mesaj);
+            self.gecis_basladi = None;
+            self.durum = if engine::is_running() {
+                Durum::Acik
+            } else {
+                Durum::Kapali
+            };
+        }
+    }
+
     /// Gerçek durumu okuyup ekrandakiyle eşitler.
     fn tazele(&mut self) {
         self.olcumu_al();
+        self.yetkiyi_kontrol_et();
         if self.durum == Durum::PkexecYok {
             return;
         }
@@ -237,14 +269,15 @@ adres çözümleme: {}",
         // Yeni bir deneme başlıyor; eski uyarı ekranda kalmasın.
         self.not = None;
         let sonuc = match self.durum {
-            Durum::Kapali => engine::start().map(|()| Durum::Baslatiliyor),
-            Durum::Acik => engine::stop().map(|()| Durum::Durduruluyor),
+            Durum::Kapali => engine::start().map(|c| (c, Durum::Baslatiliyor)),
+            Durum::Acik => engine::stop().map(|c| (c, Durum::Durduruluyor)),
             _ => return,
         };
         match sonuc {
-            Ok(yeni) => {
+            Ok((cocuk, yeni)) => {
                 self.durum = yeni;
                 self.gecis_basladi = Some(Instant::now());
+                self.islem = Some(cocuk);
             }
             Err(e) => {
                 self.aciklama.set_label(&format!("Olmadı: {e}"));
@@ -335,14 +368,15 @@ fn main() {
 
     let mut alt_bilgi = Frame::new(
         0,
-        556,
+        544,
         420,
-        20,
+        44,
         "Oyunların gerçek zamanlı bağlantısı kapsam dışı",
     );
     alt_bilgi.set_label_size(11);
     alt_bilgi.set_label_color(Color::from_rgb(110, 112, 118));
-    alt_bilgi.set_align(Align::Center | Align::Inside);
+    // Sarmalı: hata mesajı tek satıra sığmayınca kesiliyordu.
+    alt_bilgi.set_align(Align::Center | Align::Inside | Align::Wrap);
 
     pencere.end();
     pencere.show();
@@ -370,6 +404,7 @@ fn main() {
     let durum = Rc::new(RefCell::new(Uygulama {
         durum: baslangic,
         gecis_basladi: None,
+        islem: None,
         not: None,
         isik,
         baslik,
